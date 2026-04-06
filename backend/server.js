@@ -11,10 +11,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Ensure PORT is formatted correctly (and use 5001 as previously identified)
 const PORT = parseInt(process.env.PORT || '5001');
-
-// n8n Webhook: Trim any spaces from the .env for reliability
 const N8N_WEBHOOK_URL = (process.env.N8N_WEBHOOK_URL || "https://n8n-excollo.azurewebsites.net/webhook/6d06fe42-147d-4c86-9f21-68af1d782d46").trim();
 
 app.use(cors());
@@ -75,27 +72,17 @@ app.post('/api/chat-message', async (req, res) => {
     if (sender_type === 'vendor' && N8N_WEBHOOK_URL) {
       console.log(`🚀 Forwarding message to: ${N8N_WEBHOOK_URL}`);
       try {
-        const response = await axios.post(N8N_WEBHOOK_URL, {
+        await axios.post(N8N_WEBHOOK_URL, {
+          session_id: po_id, // We use the PO number as the unique session ID for n8n memory
           po_id,
           supplier_name,
           vendor_phone,
           message_text,
           timestamp: saved.sent_at
-        }, {
-           headers: { 'Content-Type': 'application/json' }
         });
-        console.log(`✅ n8n Response (${response.status}): Webhook triggered.`);
+        console.log('✅ n8n webhook triggered successfully.');
       } catch (err) {
-        if (err.response) {
-            console.error(`❌ n8n Webhook Error (${err.response.status}):`);
-            console.error(`   Message: ${err.response.statusText}`);
-            console.error(`   URL Attempted: ${N8N_WEBHOOK_URL}`);
-            console.warn(`   - Tip: Check if the Webhook Method is set to POST in n8n.`);
-            console.warn(`   - Tip: Check if the Webhook Path matches exactly.`);
-            console.warn(`   - Tip: If testing, use 'webhook-test' in the URL.`);
-        } else {
-            console.error(`❌ n8n Network Error: ${err.message}`);
-        }
+        console.error(`❌ n8n Webhook Error (${err.response?.status || 'Network Error'}): ${err.message}`);
       }
     }
 
