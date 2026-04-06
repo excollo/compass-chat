@@ -46,6 +46,17 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
     }
   };
 
+  // Generate the dynamic initial bot follow-up message
+  const initialBotMessage = {
+    sender_type: 'bot',
+    message_text: `Hi there! 👋 I'm your Compass procurement assistant.\n\nI see you have Order #${activePo.po_id} scheduled for delivery on ${formatDeliveryDate(activePo.delivery_date)}.\n\nWill you be able to deliver this order on time? Let me know if you need any adjustments! ✅`,
+    sent_at: activePo.delivery_date || new Date().toISOString(),
+    isInitial: true
+  };
+
+  // Prepend the initial bot message if it's not already in the fetched history
+  const displayMessages = [initialBotMessage, ...messages];
+
   return (
     <div className="flex-1 flex flex-col h-screen bg-[#f1f5f9]">
       {/* Header */}
@@ -69,11 +80,8 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
       {/* Message Thread */}
       <div className="flex-1 overflow-hidden relative flex flex-col">
         <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-8 custom-scrollbar pb-20">
-          {messages.length === 0 && (
-            <div className="text-center text-slate-400 mt-20 italic">No messages found for this PO.</div>
-          )}
           
-          {messages.map((msg, i) => {
+          {displayMessages.map((msg, i) => {
             const isBot = msg.sender_type === 'bot';
             return (
               <div key={i} className={`flex flex-col ${isBot ? 'items-start' : 'items-end'}`}>
@@ -82,12 +90,9 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
                     ? 'bg-white text-slate-800 rounded-tl-none border border-slate-100' 
                     : 'bg-accent-green text-white rounded-tr-none'
                 }`}>
-                  {/* <div className={`text-[11px] font-black uppercase mb-2 tracking-widest ${isBot ? 'text-navy-900/60' : 'text-white'}`}>
-                    {isBot ? 'Compass Bot' : 'Vendor'}
-                  </div> */}
                   <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-medium">{msg.message_text}</div>
                   <div className={`text-[10px] mt-2 text-right opacity-80 ${isBot ? 'text-slate-500' : 'text-white'}`}>
-                    {new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {msg.isInitial ? 'Auto-Request' : new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </div>
                 </div>
               </div>
@@ -100,7 +105,6 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
         {isTyping && (
           <div className="absolute bottom-4 left-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <div className="bg-white/90 backdrop-blur-sm p-4 rounded-2xl rounded-tl-none shadow-md border border-slate-100 flex gap-3 items-center">
-              {/* <span className="text-[10px] uppercase font-black tracking-widest text-[#16a34a]">Bot is Typing</span> */}
               <div className="flex gap-1.5 items-center">
                 <span className="dot bg-accent-green"></span>
                 <span className="dot bg-accent-green"></span>
@@ -113,20 +117,6 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
 
       {/* Footer / Input Area */}
       <footer className="p-8 bg-white border-t border-slate-200">
-        {showQuickReplies && (
-          <div className="flex gap-3 mb-6 flex-wrap">
-            {quickReplies.map((reply, idx) => (
-              <button
-                key={idx}
-                onClick={() => onSendMessage(reply.value)}
-                className="bg-white border border-slate-200 text-slate-700 font-semibold px-4 py-2 rounded-full text-[12px] hover:border-accent-green hover:text-accent-green transition-all shadow-sm"
-              >
-                {reply.label}
-              </button>
-            ))}
-          </div>
-        )}
-
         <div className="flex gap-4 items-end bg-[#f8fafc] focus-within:bg-white p-3 rounded-2xl border border-slate-200 focus-within:border-accent-green/50 transition-all shadow-sm focus-within:shadow-md">
           <textarea
             className="flex-1 bg-transparent border-none focus:ring-0 outline-none text-lg font-medium resize-none max-h-32 py-1 placeholder:text-slate-400"
