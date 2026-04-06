@@ -32,6 +32,20 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
     { label: '❌ Cannot fulfill order', value: 'I cannot fulfill this order at this time.' }
   ];
 
+  // Format date to DD/MM/YYYY
+  const formatDeliveryDate = (dateStr) => {
+    if (!dateStr) return '---';
+    try {
+      const date = new Date(dateStr);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${day}/${month}/${year}`;
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-screen bg-[#f1f5f9]">
       {/* Header */}
@@ -48,51 +62,53 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
         </div>
         
         <div className="flex items-center text-[12px] text-slate-500 gap-6 font-medium">
-          <span className="bg-slate-100 px-2 py-0.5 rounded italic">Delivery: <span className="text-navy-900 not-italic">{activePo.delivery_date}</span></span>
+          <span className="bg-slate-100 px-2 py-0.5 rounded italic">Delivery: <span className="text-navy-900 not-italic font-bold">{formatDeliveryDate(activePo.delivery_date)}</span></span>
         </div>
       </header>
 
       {/* Message Thread */}
-      <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-6 custom-scrollbar">
-        {messages.length === 0 && (
-          <div className="text-center text-slate-400 mt-20 italic">No messages found for this PO.</div>
-        )}
-        
-        {messages.map((msg, i) => {
-          const isBot = msg.sender_type === 'bot';
-          return (
-            <div key={i} className={`flex flex-col ${isBot ? 'items-start' : 'items-end'}`}>
-              <div className={`max-w-[70%] p-4 rounded-2xl shadow-sm ${
-                isBot 
-                  ? 'bg-white text-slate-800 rounded-tl-none border border-slate-100' 
-                  : 'bg-accent-green text-white rounded-tr-none'
-              }`}>
-                <div className={`text-[10px] font-bold uppercase mb-2 ${isBot ? 'text-slate-400' : 'text-green-100'}`}>
-                  {isBot ? 'Compass Bot' : 'Vendor'}
-                </div>
-                <div className="text-[14px] leading-relaxed whitespace-pre-wrap">{msg.message_text}</div>
-                <div className={`text-[9px] mt-2 text-right ${isBot ? 'text-slate-400' : 'text-green-100'}`}>
-                  {new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      <div className="flex-1 overflow-hidden relative flex flex-col">
+        <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-8 custom-scrollbar pb-20">
+          {messages.length === 0 && (
+            <div className="text-center text-slate-400 mt-20 italic">No messages found for this PO.</div>
+          )}
+          
+          {messages.map((msg, i) => {
+            const isBot = msg.sender_type === 'bot';
+            return (
+              <div key={i} className={`flex flex-col ${isBot ? 'items-start' : 'items-end'}`}>
+                <div className={`max-w-[75%] p-4 rounded-2xl shadow-sm relative ${
+                  isBot 
+                    ? 'bg-white text-slate-800 rounded-tl-none border border-slate-100' 
+                    : 'bg-accent-green text-white rounded-tr-none'
+                }`}>
+                  {/* <div className={`text-[11px] font-black uppercase mb-2 tracking-widest ${isBot ? 'text-navy-900/60' : 'text-white'}`}>
+                    {isBot ? 'Compass Bot' : 'Vendor'}
+                  </div> */}
+                  <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-medium">{msg.message_text}</div>
+                  <div className={`text-[10px] mt-2 text-right opacity-80 ${isBot ? 'text-slate-500' : 'text-white'}`}>
+                    {new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+          <div ref={scrollRef} />
+        </div>
 
+        {/* Fixed Bottom Left Typing Indicator */}
         {isTyping && (
-          <div className="flex justify-end">
-            <div className="bg-white p-4 rounded-2xl rounded-tr-none shadow-sm border border-slate-100">
-              <div className="flex gap-1 items-center">
-                <span className="text-[10px] uppercase font-bold text-slate-400 mr-2">Bot Typing</span>
-                <span className="dot"></span>
-                <span className="dot"></span>
-                <span className="dot"></span>
+          <div className="absolute bottom-4 left-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="bg-white/90 backdrop-blur-sm p-4 rounded-2xl rounded-tl-none shadow-md border border-slate-100 flex gap-3 items-center">
+              {/* <span className="text-[10px] uppercase font-black tracking-widest text-[#16a34a]">Bot is Typing</span> */}
+              <div className="flex gap-1.5 items-center">
+                <span className="dot bg-accent-green"></span>
+                <span className="dot bg-accent-green"></span>
+                <span className="dot bg-accent-green"></span>
               </div>
             </div>
           </div>
         )}
-
-        <div ref={scrollRef} />
       </div>
 
       {/* Footer / Input Area */}

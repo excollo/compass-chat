@@ -16,7 +16,7 @@ function App() {
 
   const activePo = poList.find(p => p.po_id === activePoId) || poList[0];
 
-  // Fetch POs from DB (Instead of hardcoded constants)
+  // Fetch POs from DB
   const fetchPurchaseOrders = useCallback(async () => {
     try {
       const { data } = await axios.get(`${API_BASE}/purchase-orders`);
@@ -48,10 +48,18 @@ function App() {
       const data = JSON.parse(event.data);
       if (data.event === 'new_message') {
         const { po_id, sender_type, message_text, sent_at } = data;
-        setMessages(prev => ({
-          ...prev,
-          [po_id]: [...(prev[po_id] || []), { sender_type, message_text, sent_at }]
-        }));
+        
+        // Prevent duplicate messages if added optimistically
+        setMessages(prev => {
+          const currentMsgs = prev[po_id] || [];
+          const exists = currentMsgs.find(m => m.message_text === message_text && m.sent_at === sent_at);
+          if (exists) return prev;
+          
+          return {
+            ...prev,
+            [po_id]: [...currentMsgs, { sender_type, message_text, sent_at }]
+          };
+        });
         
         // Clear typing indicator if bot responded
         if (sender_type === 'bot') {
@@ -83,10 +91,10 @@ function App() {
     try {
       if (!activePo) return;
       
-      // Optimistic Bot reply indicator
+      // Start typing indicator for bot
       setIsTyping(prev => ({ ...prev, [activePoId]: true }));
 
-      // Save to backend (PostgreSQL)
+      // Save to backend (PostgreSQL + n8n trigger)
       await axios.post(`${API_BASE}/chat-message`, {
         po_id: activePoId,
         sender_type: 'vendor',
@@ -94,6 +102,7 @@ function App() {
         vendor_phone: activePo.vendor_phone,
         supplier_name: activePo.supplier_name
       });
+
     } catch (err) {
       console.error('Failed to send message:', err);
       setIsTyping(prev => ({ ...prev, [activePoId]: false }));
@@ -102,10 +111,10 @@ function App() {
 
   if (poList.length === 0) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-navy-900 text-white">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#0f172a] text-white">
         <div className="text-center">
-          <h1 className="text-2xl font-bold mb-2">Connecting to Purchase Data...</h1>
-          <p className="text-slate-400">Loading your real-time procurement hub.</p>
+          <h1 className="text-2xl font-bold mb-2">Connecting to Data Hub...</h1>
+          <p className="text-slate-400">Verifying purchase order records.</p>
         </div>
       </div>
     );

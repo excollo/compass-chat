@@ -9,76 +9,66 @@ const pool = new Pool({
   database: process.env.DB_DATABASE,
   password: process.env.DB_PASSWORD,
   port: parseInt(process.env.DB_PORT || '5432'),
-  connectionTimeoutMillis: 10000,
-  // remote databases like Supabase often REQUIRE SSL
+  connectionTimeoutMillis: 15000,
   ssl: {
     rejectUnauthorized: false
   }
 });
 
-// Explicit connection test on startup
-const testConnection = async () => {
-  try {
-    const client = await pool.connect();
-    console.log(`✅ Database connected successfully to ${process.env.DB_DATABASE} on ${process.env.DB_HOST}`);
-    client.release();
-    return true;
-  } catch (err) {
-    console.error(`❌ DATABASE CONNECTION ERROR: 
-    - Check your credentials in .env
-    - Ensure your password is correct
-    - For Supabase, check if you have allowed your IP in their dashboard (if using IP restrictions)
-    - Specific Error: ${err.message}`);
-    return false;
-  }
-};
-
 pool.on('error', (err, client) => {
   console.error('Unexpected error on idle client', err);
 });
 
-// Setup chat_history table
+// Setup chat_history table with the SPECIFIC SCHEMA requested
 const initDatabase = async () => {
-  if (!(await testConnection())) return;
-  
   try {
-    await pool.query(`
+    const client = await pool.connect();
+    console.log('✅ Connected to database for initialization.');
+    
+    await client.query(`
       CREATE TABLE IF NOT EXISTS chat_history (
-        message_id UUID PRIMARY KEY,
-        po_id TEXT NOT NULL,
-        sender_type TEXT NOT NULL,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        po_num TEXT NOT NULL,
+        sender_type TEXT NOT NULL, -- 'bot' or 'vendor'
         message_text TEXT NOT NULL,
+        direction TEXT,             -- 'inbound' or 'outbound'
+        escalation_required BOOLEAN DEFAULT FALSE,
         vendor_phone TEXT,
         sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    console.log('Database initialized: chat_history table is ready.');
+    
+    console.log('✅ Database initialized: chat_history table is ready with extended fields.');
+    client.release();
   } catch (err) {
-    console.error('Error initializing database:', err);
+    console.error('❌ Error initializing database:', err.message);
   }
 };
 
 // Messaging: Save Message
-const saveMessage = async (po_id, sender_type, message_text, vendor_phone) => {
-  const id = uuidv4();
+const saveMessage = async (po_num, sender_type, message_text, vendor_phone) => {
+  const direction = sender_type === 'vendor' ? 'inbound' : 'outbound';
   const query = `
-    INSERT INTO chat_history (message_id, po_id, sender_type, message_text, vendor_phone)
+    INSERT INTO chat_history (po_num, sender_type, message_text, direction, vendor_phone)
     VALUES ($1, $2, $3, $4, $5)
     RETURNING *;
   `;
-  const values = [id, po_id, sender_type, message_text, vendor_phone];
+  const values = [po_num, sender_type, message_text, direction, vendor_phone];
   const { rows } = await pool.query(query, values);
   return rows[0];
 };
 
-// Messaging: Get Chat History
-const getChatHistory = async (po_id) => {
-  const query = `SELECT * FROM chat_history WHERE po_id = $1 ORDER BY sent_at ASC`;
-  const { rows } = await pool.query(query, [po_id]);
-  return rows;
+// Messaging: Get Chat History (Mapping and Sorting)
+const getChatHistory = async (po_num) => {
+  const query = `SELECT * FROM chat_history WHERE po_num = $1 ORDER BY sent_at ASC`;
+  const { rows } = await pool.query(query, [po_num]);
+  return rows.map(r => ({
+    ...r,
+    po_id: r.po_num // Ensure internal frontend mapping stays intact
+  }));
 };
 
-// Procurement: Fetch data from the live "selected_open_po_line_items" (or ENV)
+// Procurement: Fetch data from the live "selected_open_po_line_items"
 const getPurchaseOrders = async () => {
   try {
     const tableName = process.env.DB_TABLE_PO || 'selected_open_po_line_items';
@@ -98,11 +88,11 @@ const getPurchaseOrders = async () => {
     
     return rows.map(r => ({
       ...r,
-      site: "Compass Site", // Static placeholder
+      site: "Compass Site",
       status: r.status || 'pending'
     }));
   } catch (err) {
-    console.error('PO Fetch Error (Ensure table exists):', err.message);
+    console.error('PO Fetch Error:', err.message);
     return [];
   }
 };
