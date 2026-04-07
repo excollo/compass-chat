@@ -85,14 +85,18 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
             const isBot = msg.sender_type === 'bot';
             return (
               <div key={i} className={`flex flex-col ${isBot ? 'items-start' : 'items-end'}`}>
-                <div className={`max-w-[75%] p-4 rounded-2xl shadow-sm relative ${
+                <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl shadow-sm relative ${
                   isBot 
                     ? 'bg-white text-slate-800 rounded-tl-none border border-slate-100' 
                     : 'bg-accent-green text-white rounded-tr-none'
                 }`}>
-                  <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-medium">{msg.message_text}</div>
-                  <div className={`text-[10px] mt-2 text-right opacity-80 ${isBot ? 'text-slate-500' : 'text-white'}`}>
-                    {msg.isInitial ? 'Auto-Request' : new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <div className="flex flex-wrap items-end justify-end gap-x-4 gap-y-1">
+                    <div className="text-[15px] leading-snug whitespace-pre-wrap font-medium flex-1 min-w-[80px]">
+                      {msg.message_text}
+                    </div>
+                    <div className={`text-[10px] opacity-70 shrink-0 mb-[-2px] font-bold ${isBot ? 'text-slate-500' : 'text-white'}`}>
+                      {msg.isInitial ? 'Auto-Request' : new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                    </div>
                   </div>
                 </div>
               </div>
