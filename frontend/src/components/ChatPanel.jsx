@@ -49,7 +49,7 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
   // Generate the dynamic initial bot follow-up message
   const initialBotMessage = {
     sender_type: 'bot',
-    message_text: `Hi there! 👋 I'm your Compass procurement assistant.\n\nI see you have Order #${activePo.po_id} scheduled for delivery on ${formatDeliveryDate(activePo.delivery_date)}.\n\nWill you be able to deliver this order on time? Let me know if you need any adjustments! ✅`,
+    message_text: `Hi there! 👋 I'm your Compass procurement assistant.\n\nI see you have Order #${activePo.po_id} scheduled for delivery on ${formatDeliveryDate(activePo.delivery_date)}.\n\nWill you be able to deliver this order on time? ✅`,
     sent_at: activePo.delivery_date || new Date().toISOString(),
     isInitial: true
   };
