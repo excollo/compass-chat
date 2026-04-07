@@ -4,17 +4,28 @@ import ChatPanel from './components/ChatPanel';
 import axios from 'axios';
 
 // Vite environment variables (VITE_ prefix required)
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5000/api';
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5000/ws/chat';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5001/api';
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5001';
 
 function App() {
   const [poList, setPoList] = useState([]);
-  const [activePoId, setActivePoId] = useState(null);
+  const [activePoId, setActivePoId] = useState(() => {
+    // 1. Initialize from localStorage to persist selection across reloads
+    return localStorage.getItem('activePoId') || null;
+  });
   const [messages, setMessages] = useState({}); // po_id -> [messages]
   const [isTyping, setIsTyping] = useState({}); // po_id -> boolean
   const [ws, setWs] = useState(null);
 
   const activePo = poList.find(p => p.po_id === activePoId) || poList[0];
+
+  // 2. Persist activePoId to localStorage whenever it changes
+  useEffect(() => {
+    if (activePoId) {
+      localStorage.setItem('activePoId', activePoId);
+    }
+  }, [activePoId]);
+
 
   // Fetch POs from DB
   const fetchPurchaseOrders = useCallback(async () => {
@@ -33,7 +44,7 @@ function App() {
   const fetchHistory = useCallback(async (po_id) => {
     try {
       const { data } = await axios.get(`${API_BASE}/chat-history?po_id=${po_id}`);
-      setMessages(prev => ({ ...prev, [po_id]: data }));
+      setMessages(prev => ({ ...prev, [po_id]: data || [] }));
     } catch (err) {
       console.error('Failed to fetch history:', err);
     }
@@ -43,7 +54,7 @@ function App() {
   useEffect(() => {
     const socket = new WebSocket(WS_URL);
     
-    socket.onopen = () => console.log('WebSocket Connected');
+    socket.onopen = () => console.log('WebSocket Connected to ' + WS_URL);
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.event === 'new_message') {
@@ -52,7 +63,15 @@ function App() {
         // Prevent duplicate messages if added optimistically
         setMessages(prev => {
           const currentMsgs = prev[po_id] || [];
-          const exists = currentMsgs.find(m => m.message_text === message_text && m.sent_at === sent_at);
+          
+          // Check if this message was already added (ignoring exact timestamp match)
+          const exists = currentMsgs.find(m => 
+            m.message_text === message_text && 
+            m.sender_type === sender_type &&
+            // Check if it was sent within the last 10 seconds to avoid older duplicate texts
+            (new Date(sent_at) - new Date(m.sent_at) < 10000)
+          );
+          
           if (exists) return prev;
           
           return {
@@ -60,6 +79,7 @@ function App() {
             [po_id]: [...currentMsgs, { sender_type, message_text, sent_at }]
           };
         });
+
         
         // Clear typing indicator if bot responded
         if (sender_type === 'bot') {
@@ -70,7 +90,11 @@ function App() {
     
     socket.onclose = () => {
       console.log('WebSocket Disconnected, retrying...');
-      setTimeout(() => setWs(new WebSocket(WS_URL)), 3000);
+      setTimeout(() => {
+          // Re-initialize websocket after a delay
+          const newSocket = new WebSocket(WS_URL);
+          setWs(newSocket);
+      }, 3000);
     };
 
     setWs(socket);
@@ -88,13 +112,25 @@ function App() {
   }, [poList, fetchHistory]);
 
   const handleSendMessage = async (text) => {
+    if (!activePo || !activePoId) return;
+    
+    const sent_at = new Date().toISOString();
+
+    // 1. Optimistic UI update — show message immediately
+    setMessages(prev => ({
+        ...prev,
+        [activePoId]: [...(prev[activePoId] || []), {
+            sender_type: 'vendor',
+            message_text: text,
+            sent_at
+        }]
+    }));
+
     try {
-      if (!activePo) return;
-      
-      // Start typing indicator for bot
+      // 2. Start typing indicator for bot
       setIsTyping(prev => ({ ...prev, [activePoId]: true }));
 
-      // Save to backend (PostgreSQL + n8n trigger)
+      // 3. Save to backend (PostgreSQL + Agent trigger)
       await axios.post(`${API_BASE}/chat-message`, {
         po_id: activePoId,
         sender_type: 'vendor',
@@ -106,8 +142,10 @@ function App() {
     } catch (err) {
       console.error('Failed to send message:', err);
       setIsTyping(prev => ({ ...prev, [activePoId]: false }));
+      // Optional: Handle error by removing the optimistic message or showing an alert
     }
   };
+
 
   if (poList.length === 0) {
     return (

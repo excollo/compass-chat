@@ -12,7 +12,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const PORT = parseInt(process.env.PORT || '5001');
-const N8N_WEBHOOK_URL = (process.env.N8N_WEBHOOK_URL || "https://n8n-excollo.azurewebsites.net/webhook/6d06fe42-147d-4c86-9f21-68af1d782d46").trim();
+const AGENT_WEBHOOK_URL = (process.env.AGENT_WEBHOOK_URL || "http://localhost:8000/webhook/chat").trim();
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -54,10 +54,12 @@ app.get('/api/chat-history', async (req, res) => {
 // API: Save and forward message
 app.post('/api/chat-message', async (req, res) => {
   try {
-    const { po_id, sender_type, message_text, vendor_phone, supplier_name } = req.body;
+    const { po_id, sender_type, message_text, vendor_phone, supplier_name, intent, escalate, admin_message, conversation_complete } = req.body;
     
+    console.log(`📩 [BACKEND] Message received from ${sender_type} for PO: ${po_id}`);
+
     // Save to PostgreSQL (chat_history table)
-    const saved = await saveMessage(po_id, sender_type, message_text, vendor_phone);
+    const saved = await saveMessage(po_id, sender_type, message_text, vendor_phone, intent, escalate);
     
     // Broadcast via WebSocket
     broadcast({ 
@@ -65,26 +67,35 @@ app.post('/api/chat-message', async (req, res) => {
       po_id, 
       sender_type, 
       message_text, 
+      intent: intent || null,
+      escalate: escalate || false,
+      admin_message: admin_message || '',
       sent_at: saved.sent_at 
     });
 
-    // Forward to n8n if sender is vendor
-    if (sender_type === 'vendor' && N8N_WEBHOOK_URL) {
-      console.log(`🚀 Forwarding message to: ${N8N_WEBHOOK_URL}`);
-      try {
-        await axios.post(N8N_WEBHOOK_URL, {
-          session_id: po_id, // We use the PO number as the unique session ID for n8n memory
-          po_id,
-          supplier_name,
-          vendor_phone,
-          message_text,
-          timestamp: saved.sent_at
-        });
-        console.log('✅ n8n webhook triggered successfully.');
-      } catch (err) {
-        console.error(`❌ n8n Webhook Error (${err.response?.status || 'Network Error'}): ${err.message}`);
+    // Forward to agent if sender is vendor
+    if (sender_type === 'vendor') {
+      if (AGENT_WEBHOOK_URL) {
+        console.log(`🚀 [BACKEND] Forwarding to agent: ${AGENT_WEBHOOK_URL}`);
+        try {
+          const resp = await axios.post(AGENT_WEBHOOK_URL, {
+            session_id: po_id, 
+            po_id,
+            supplier_name,
+            vendor_phone,
+            message_text,
+            timestamp: saved.sent_at
+          });
+          console.log(`✅ [BACKEND] Agent Response: ${resp.status} ${JSON.stringify(resp.data)}`);
+        } catch (err) {
+          console.error(`❌ [BACKEND] Agent Webhook Error: ${err.message}`);
+        }
+      } else {
+        console.error("⚠️ [BACKEND] AGENT_WEBHOOK_URL is not defined!");
       }
     }
+
+
 
     res.json(saved);
   } catch (error) {
@@ -98,6 +109,7 @@ wss.on('connection', (ws) => {
 
 server.listen(PORT, () => {
   console.log(`\n🚀 Backend Server running on port ${PORT}`);
-  console.log(`🔗 Active n8n Webhook: ${N8N_WEBHOOK_URL}`);
+  console.log(`🔗 Active Agent Webhook: ${AGENT_WEBHOOK_URL}`);
   console.log('--------------------------------------------------\n');
 });
+

@@ -29,16 +29,22 @@ const initDatabase = async () => {
       CREATE TABLE IF NOT EXISTS chat_history (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         po_num TEXT NOT NULL,
-        sender_type TEXT NOT NULL, -- 'bot' or 'vendor'
+        sender_type TEXT NOT NULL,
         message_text TEXT NOT NULL,
-        direction TEXT,             -- 'inbound' or 'outbound'
+        direction TEXT,
+        intent TEXT,
         escalation_required BOOLEAN DEFAULT FALSE,
         vendor_phone TEXT,
         sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // Ensure columns exist (for migration if table already existed)
+    console.log('🧐 Verifying database columns...');
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS intent TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS escalation_required BOOLEAN DEFAULT FALSE`);
     
-    console.log('✅ Database initialized: chat_history table is ready with extended fields.');
+    console.log('✅ Database initialized correctly.');
     client.release();
   } catch (err) {
     console.error('❌ Error initializing database:', err.message);
@@ -46,17 +52,23 @@ const initDatabase = async () => {
 };
 
 // Messaging: Save Message
-const saveMessage = async (po_num, sender_type, message_text, vendor_phone) => {
+const saveMessage = async (po_num, sender_type, message_text, vendor_phone, intent = null, escalation_required = false) => {
   const direction = sender_type === 'vendor' ? 'inbound' : 'outbound';
+  console.log(`📝 [DB] Saving message to chat_history...`);
+  
   const query = `
-    INSERT INTO chat_history (po_num, sender_type, message_text, direction, vendor_phone)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO chat_history (po_num, sender_type, message_text, direction, vendor_phone, intent, escalation_required)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *;
   `;
-  const values = [po_num, sender_type, message_text, direction, vendor_phone];
+  const values = [po_num, sender_type, message_text, direction, vendor_phone, intent, escalation_required];
+  
   const { rows } = await pool.query(query, values);
+  console.log(`✅ [DB] Message saved successfully. ID: ${rows[0].id}`);
   return rows[0];
 };
+
+
 
 // Messaging: Get Chat History (Mapping and Sorting)
 const getChatHistory = async (po_num) => {
