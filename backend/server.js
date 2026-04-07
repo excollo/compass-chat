@@ -12,7 +12,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const PORT = parseInt(process.env.PORT || '5001');
-const AGENT_WEBHOOK_URL = (process.env.AGENT_WEBHOOK_URL || "http://localhost:8000/webhook/chat").trim();
+const N8N_WEBHOOK_URL = (process.env.N8N_WEBHOOK_URL || "https://n8n-excollo.azurewebsites.net/webhook-test/6d06fe42-147d-4c86-9f21-68af1d782d46").trim();
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -73,12 +73,12 @@ app.post('/api/chat-message', async (req, res) => {
       sent_at: saved.sent_at 
     });
 
-    // Forward to agent if sender is vendor
+    // Forward to n8n if sender is vendor
     if (sender_type === 'vendor') {
-      if (AGENT_WEBHOOK_URL) {
-        console.log(`🚀 [BACKEND] Forwarding to agent: ${AGENT_WEBHOOK_URL}`);
+      if (N8N_WEBHOOK_URL) {
+        console.log(`🚀 [BACKEND] Forwarding to n8n: ${N8N_WEBHOOK_URL}`);
         try {
-          const resp = await axios.post(AGENT_WEBHOOK_URL, {
+          const resp = await axios.post(N8N_WEBHOOK_URL, {
             session_id: po_id, 
             po_id,
             supplier_name,
@@ -86,12 +86,12 @@ app.post('/api/chat-message', async (req, res) => {
             message_text,
             timestamp: saved.sent_at
           });
-          console.log(`✅ [BACKEND] Agent Response: ${resp.status} ${JSON.stringify(resp.data)}`);
+          console.log(`✅ [BACKEND] n8n Response: ${resp.status} ${JSON.stringify(resp.data)}`);
         } catch (err) {
-          console.error(`❌ [BACKEND] Agent Webhook Error: ${err.message}`);
+          console.error(`❌ [BACKEND] n8n Webhook Error: ${err.message}`);
         }
       } else {
-        console.error("⚠️ [BACKEND] AGENT_WEBHOOK_URL is not defined!");
+        console.error("⚠️ [BACKEND] N8N_WEBHOOK_URL is not defined!");
       }
     }
 
@@ -109,7 +109,7 @@ wss.on('connection', (ws) => {
 
 server.listen(PORT, () => {
   console.log(`\n🚀 Backend Server running on port ${PORT}`);
-  console.log(`🔗 Active Agent Webhook: ${AGENT_WEBHOOK_URL}`);
+  console.log(`🔗 Active Webhook: ${N8N_WEBHOOK_URL}`);
   console.log('--------------------------------------------------\n');
 });
 
