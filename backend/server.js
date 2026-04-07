@@ -20,6 +20,11 @@ app.use(bodyParser.json());
 // Initialize table on startup
 initDatabase();
 
+// Health Check Endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // WebSocket Broadcaster
 const broadcast = (data) => {
   wss.clients.forEach((client) => {
