@@ -2,22 +2,29 @@ require('dotenv').config();
 const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
 
-// PostgreSQL connection pool optimized for Supabase/Remote hosts
+// PostgreSQL connection pool optimized for Deployed Environments
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
   database: process.env.DB_DATABASE,
   password: process.env.DB_PASSWORD,
   port: parseInt(process.env.DB_PORT || '5432'),
-  connectionTimeoutMillis: 15000,
+  connectionTimeoutMillis: 30000, // Wait 30s before timing out
+  idleTimeoutMillis: 30000,       // Close idle clients after 30s
+  max: 10,                        // Limit concurrent connections
   ssl: {
     rejectUnauthorized: false
-  }
+  },
+  // Extra reliability for pooler (Supabase port 6543)
+  keepalive: true,
+  keepaliveInitialDelayMillis: 10000
 });
 
 pool.on('error', (err, client) => {
-  console.error('Unexpected error on idle client', err);
+  console.error('⚠️ [DB] Unexpected pool error:', err.message);
+  // Optional: Add logic to re-initialize if the pool dies
 });
+
 
 // Setup chat_history table with the SPECIFIC SCHEMA requested
 const initDatabase = async () => {
