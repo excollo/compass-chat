@@ -57,6 +57,15 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
   // Prepend the initial bot message if it's not already in the fetched history
   const displayMessages = [initialBotMessage, ...messages];
 
+  const handleRestart = async () => {
+    try {
+      await fetch(`http://localhost:5001/api/chat-history?po_id=${activePo.po_id}`, { method: 'DELETE' });
+      window.location.reload();
+    } catch (e) {
+      console.error('Failed to restart conversation:', e);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col h-screen bg-[#f1f5f9]">
       {/* Header */}
@@ -66,9 +75,17 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
             <h2 className="text-xl font-bold text-navy-900">{activePo.po_id}</h2>
             <p className="text-slate-500 font-medium text-sm">{activePo.supplier_name}</p>
           </div>
-          <div className="flex items-center gap-2 px-3 py-1 bg-green-50 rounded-full border border-green-200">
-            <span className="w-2 h-2 rounded-full bg-accent-green pulse-green"></span>
-            <span className="text-[11px] font-bold text-accent-green uppercase tracking-wider">Live</span>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={handleRestart}
+              className="px-3 py-1 text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md transition-colors"
+            >
+              🔄 Restart Chat
+            </button>
+            <div className="flex items-center gap-2 px-3 py-1 bg-green-50 rounded-full border border-green-200">
+              <span className="w-2 h-2 rounded-full bg-accent-green pulse-green"></span>
+              <span className="text-[11px] font-bold text-accent-green uppercase tracking-wider">Live</span>
+            </div>
           </div>
         </div>
         

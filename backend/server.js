@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { saveMessage, getChatHistory, getPurchaseOrders, initDatabase } = require('./database');
+const { saveMessage, getChatHistory, deleteChatHistory, getPurchaseOrders, initDatabase } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
@@ -51,6 +51,23 @@ app.get('/api/chat-history', async (req, res) => {
     if (!po_id) return res.status(400).json({ error: 'po_id is required' });
     const history = await getChatHistory(po_id);
     res.json(history);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Clear/Refresh chat history for a PO
+app.delete('/api/chat-history', async (req, res) => {
+  try {
+    const { po_id } = req.query;
+    if (!po_id) return res.status(400).json({ error: 'po_id is required' });
+    
+    await deleteChatHistory(po_id);
+    
+    // Broadcast clear event so UI components can reset instantly
+    broadcast({ event: 'clear_chat', po_id });
+    
+    res.json({ success: true, message: 'Conversation memory cleared' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

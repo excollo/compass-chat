@@ -87,6 +87,14 @@ const getChatHistory = async (po_num) => {
   }));
 };
 
+// Messaging: Delete Chat History (Refresh Memory)
+const deleteChatHistory = async (po_num) => {
+  const query = `DELETE FROM chat_history WHERE po_num = $1`;
+  await pool.query(query, [po_num]);
+  console.log(`🗑️ [DB] Deleted chat history for PO: ${po_num}`);
+  return true;
+};
+
 // Procurement: Fetch data from the live "selected_open_po_line_items"
 const getPurchaseOrders = async () => {
   try {
@@ -119,6 +127,7 @@ const getPurchaseOrders = async () => {
 module.exports = {
   saveMessage,
   getChatHistory,
+  deleteChatHistory,
   getPurchaseOrders,
   initDatabase,
   pool
