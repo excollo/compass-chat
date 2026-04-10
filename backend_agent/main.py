@@ -7,9 +7,18 @@ from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import call_agent, summarize_handback, generate_proactive_message
-from config import BACKEND_URL, PORT
-from database import close_pool, fetch_po_data, format_po_block, fetch_chat_history, update_thread_state_db
+from agent import call_agent, summarize_handback, generate_proactive_message, generate_po_summary
+from config import BACKEND_URL, PORT, OPENAI_API_KEY
+from database import (
+    close_pool, 
+    fetch_po_data, 
+    format_po_block, 
+    fetch_chat_history, 
+    update_thread_state_db,
+    ensure_tables,
+    fetch_chat_history_by_po,
+    insert_po_summary
+)
 from intent_parser import parse_intent
 
 logging.basicConfig(
