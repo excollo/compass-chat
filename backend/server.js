@@ -6,6 +6,186 @@ const axios = require('axios');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const { saveMessage, getChatHistory, deleteChatHistory, getPurchaseOrders, updateThreadState, initDatabase } = require('./database');
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+console.log("📡 [REALTIME] Initializing subscription early...");
+supabase
+  .channel('po-updates')
+  .on(
+    'postgres_changes',
+    {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'selected_open_po_line_items'
+    },
+    async (payload) => {
+      try {
+        console.log(`📡 [REALTIME] Event received: ${payload.eventType}`);
+        const record = payload.new;
+        const old_record = payload.old || {};
+        const po_id = record.po_num;
+        const changes = [];
+
+        if (record.delivery_date !== old_record.delivery_date) {
+          changes.push(`Delivery Date changed to ${record.delivery_date}`);
+        }
+        if (record.status !== old_record.status) {
+          changes.push(`Status changed to ${record.status}`);
+        }
+        if (record.po_quantity !== old_record.po_quantity) {
+          changes.push(`Ordered Quantity changed to ${record.po_quantity}`);
+        }
+        if (record.delivered_quantity !== old_record.delivered_quantity) {
+          changes.push(`Delivered Quantity changed to ${record.delivered_quantity}`);
+        }
+
+        if (changes.length > 0) {
+          console.log(`🔔 [PROACTIVE] Triggering bot for PO ${po_id} updates.`);
+          const PYTHON_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+          await axios.post(`${PYTHON_URL}/webhook/proactive-update`, {
+            po_id,
+            supplier_name: record.vendor_name,
+            vendor_phone: record.vendor_phone,
+            changes: changes
+          });
+        }
+      } catch (err) {
+        console.error('❌ [REALTIME] Listener Error:', err.message);
+      }
+    }
+  )
+  .subscribe((status) => {
+    console.log(`📡 [REALTIME] Subscription Status: ${status}`);
+  });
+
+// Maps bot intent values to escalations table reason values
+const INTENT_TO_REASON = {
+  'PARTIAL':         'partial_delivery',
+  'REJECTED':        'order_rejected',
+  'DELAYED':         'delivery_delay',
+  'PRICE_UPDATE':    'pricing_issue',
+  'QUANTITY_CHANGE': 'partial_delivery',
+  'PO_CANCELLATION': 'order_rejected',
+  'PAYMENT_ISSUE':   'payment_issue',
+  'QUALITY_ISSUE':   'quality_issue',
+};
+
+const INTENT_TO_PRIORITY = {
+  'PO_CANCELLATION': 'critical',
+  'REJECTED':        'critical',
+  'PRICE_UPDATE':    'high',
+  'PAYMENT_ISSUE':   'high',
+  'PARTIAL':         'high',
+  'DELAYED':         'medium',
+  'QUANTITY_CHANGE': 'medium',
+  'QUALITY_ISSUE':   'medium',
+};
+
+const INTENT_TO_CATEGORY = {
+  'PARTIAL':         'Shortage',
+  'REJECTED':        'Operation',
+  'DELAYED':         'Delay',
+  'PRICE_UPDATE':    'Pricing',
+  'QUANTITY_CHANGE': 'Shortage',
+  'PO_CANCELLATION': 'Operation',
+  'PAYMENT_ISSUE':   'Payment',
+  'QUALITY_ISSUE':   'Quality',
+};
+
+// Helper to convert DD-MM-YYYY to YYYY-MM-DD for Postgres
+function formatDateForPostgres(dateStr) {
+  if (!dateStr) return null;
+  // If it's already ISO format (contains T or starts with YYYY-MM-DD)
+  if (dateStr.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+    return dateStr;
+  }
+  // Try parsing DD-MM-YYYY
+  const parts = dateStr.split('-');
+  if (parts.length === 3 && parts[2].length === 4) {
+    // DD-MM-YYYY -> YYYY-MM-DD
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+  return dateStr;
+}
+
+async function createEscalationInSupabase(poData) {
+  try {
+    const {
+      po_id,
+      vendor_phone,
+      supplier_name,
+      intent,
+      reason,
+      admin_message,
+      sent_at
+    } = poData;
+
+    // fetch PO details from selected_open_po_line_items
+    const { data: poRecord } = await supabase
+      .from('selected_open_po_line_items')
+      .select('*')
+      .eq('po_num', po_id)
+      .single();
+
+    if (!poRecord) {
+      console.error(`❌ [ESCALATION] PO not found in Supabase: ${po_id}`);
+      return null;
+    }
+
+    const escalationReason = INTENT_TO_REASON[intent] || 'other';
+    const priority = INTENT_TO_PRIORITY[intent] || 'medium';
+    const category = INTENT_TO_CATEGORY[intent] || 'Operation';
+
+    const escalationData = {
+      po_num:               po_id,
+      vendor_code:          poRecord.vendor_code || '',
+      vendor_name:          poRecord.vendor_name || supplier_name || '',
+      vendor_phone:         vendor_phone || poRecord.vendor_phone || '',
+      delivery_site:        poRecord.unit_description || poRecord.unit || '',
+      escalation_reason:    escalationReason,
+      reason_detail:        reason || 'Escalated by bot',
+      category:             category,
+      priority:             priority,
+      status:               'open',
+      po_status:            'open',
+      delivery_date:        formatDateForPostgres(poRecord.delivery_date) || new Date().toISOString().split('T')[0],
+      document_date:        formatDateForPostgres(poRecord.po_date) || null,
+      total_lines:          1,
+      pending_lines:        1,
+      fulfillment_rate:     0,
+      vendor_sla_applies:   intent === 'NO_RESPONSE' ? true : false,
+      vendor_sla_hours:     24,
+      last_bot_message_at:  sent_at || new Date().toISOString(),
+      bot_attempt_count:    1,
+      operator_sla_hours:   2,
+      escalation_created_at: new Date().toISOString(),
+      ai_summary:           admin_message || `Bot escalated PO ${po_id} — ${reason}`,
+    };
+
+    const { data: inserted, error } = await supabase
+      .from('escalations')
+      .insert(escalationData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error(`❌ [ESCALATION] Supabase insert failed:`, error.message);
+      return null;
+    }
+
+    console.log(`✅ [ESCALATION] Created escalation for PO ${po_id} — reason: ${escalationReason} — id: ${inserted.id}`);
+    return inserted;
+
+  } catch (err) {
+    console.error(`❌ [ESCALATION] createEscalation failed:`, err.message);
+    return null;
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -95,6 +275,44 @@ app.post('/api/chat-message', async (req, res) => {
       sent_at: saved.sent_at 
     });
 
+    // If bot flagged escalation — create record in Supabase escalations table
+    if (escalate === true && sender_type === 'bot' && intent) {
+      console.log(`🚨 [ESCALATION] Bot flagged escalation for PO ${po_id} — intent: ${intent}`);
+      
+      const escalationRecord = await createEscalationInSupabase({
+        po_id,
+        vendor_phone,
+        supplier_name,
+        intent,
+        reason: req.body.reason || '',
+        admin_message,
+        sent_at: saved.sent_at
+      });
+
+      // broadcast escalation event separately so admin frontend
+      // can update notification bell in real time
+      if (escalationRecord) {
+        broadcast({
+          event: 'new_escalation',
+          escalation_id:  escalationRecord.id,
+          po_num:         po_id,
+          vendor_name:    escalationRecord.vendor_name,
+          reason:         escalationRecord.escalation_reason,
+          reason_detail:  escalationRecord.reason_detail,
+          priority:       escalationRecord.priority,
+          category:       escalationRecord.category,
+          ai_summary:     escalationRecord.ai_summary,
+          created_at:     escalationRecord.escalation_created_at
+        });
+      }
+
+      // also update thread_state to escalated
+      await supabase
+        .from('selected_open_po_line_items')
+        .update({ thread_state: 'escalated' })
+        .eq('po_num', po_id);
+    }
+
     // Forward vendor messages to Python orchestration backend
     // Python will check thread_state and decide whether bot should respond
     // Operator messages are NOT forwarded — they are human-to-vendor directly
@@ -167,6 +385,50 @@ app.post('/api/handback', async (req, res) => {
     broadcast({ event: 'thread_state_change', po_id: po_num, thread_state: 'bot_active' });
     res.json({ success: true, thread_state: 'bot_active' });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: PO Update Webhook (backup)
+app.post('/api/webhook/po-update', async (req, res) => {
+  try {
+    const { record, old_record, type } = req.body;
+    
+    if (type !== 'UPDATE') return res.status(200).json({ status: 'ignored' });
+    
+    const po_id = record.po_num;
+    const changes = [];
+    
+    // Check specific fields for changes
+    if (record.delivery_date !== old_record.delivery_date) {
+      changes.push(`Delivery Date changed from ${old_record.delivery_date} to ${record.delivery_date}`);
+    }
+    if (record.status !== old_record.status) {
+      changes.push(`Status changed from ${old_record.status} to ${record.status}`);
+    }
+    if (record.po_quantity !== old_record.po_quantity) {
+      changes.push(`Ordered Quantity changed from ${old_record.po_quantity} to ${record.po_quantity}`);
+    }
+    if (record.delivered_quantity !== old_record.delivered_quantity) {
+      changes.push(`Delivered Quantity changed from ${old_record.delivered_quantity} to ${record.delivered_quantity}`);
+    }
+
+    if (changes.length > 0) {
+      console.log(`🔔 [ESCALATION] PO ${po_id} updated. Triggering proactive bot notification.`);
+      
+      // Forward to Python agent for AI-generated proactive message
+      const PYTHON_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+      await axios.post(`${PYTHON_URL}/webhook/proactive-update`, {
+        po_id,
+        supplier_name: record.vendor_name,
+        vendor_phone: record.vendor_phone,
+        changes: changes
+      });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [WEBHOOK] PO Update Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

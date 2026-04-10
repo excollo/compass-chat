@@ -187,3 +187,32 @@ async def summarize_handback(history: List[Dict[str, Any]]) -> str:
     except Exception as exc:
         logger.error(f"❌ Error in summarization: {exc}")
         return ""
+
+
+async def generate_proactive_message(po_id: str, changes: List[str]) -> str:
+    """Generate a natural, friendly notification about PO updates."""
+    if not changes:
+        return ""
+    
+    changes_text = "\n".join([f"- {c}" for c in changes])
+    
+    prompt = (
+        f"You are a procurement assistant for Compass Group India. "
+        f"A Purchase Order (PO #{po_id}) has been updated in our internal system. "
+        f"Send a short, friendly WhatsApp-style message to the vendor informing them of these changes:\n\n"
+        f"{changes_text}\n\n"
+        f"TONE: Professional but warm. One or two lines max. "
+        f"Do not ask a question, just inform them. "
+        f"Mention that they can reach out if they have any concerns."
+    )
+
+    try:
+        response = await _client.chat.completions.create(
+            model=OPENAI_MODEL,
+            temperature=0.7,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.error(f"❌ Error in proactive generation: {exc}")
+        return f"Hi, just a heads up that PO #{po_id} has been updated with new details."
