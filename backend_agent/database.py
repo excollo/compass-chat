@@ -1,5 +1,5 @@
 import asyncpg
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from config import DATABASE_URL
 
 _pool: Optional[asyncpg.Pool] = None
@@ -19,6 +19,65 @@ async def close_pool() -> None:
     if _pool is not None:
         await _pool.close()
         _pool = None
+
+
+async def ensure_tables() -> None:
+    """Create application-managed tables if they do not already exist."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS public.po_summaries (
+                id UUID NOT NULL DEFAULT gen_random_uuid(),
+                po_num TEXT NOT NULL,
+                summary_text TEXT NOT NULL,
+                key_intent TEXT NULL,
+                risk_level TEXT NULL DEFAULT 'none',
+                message_count INT NULL DEFAULT 0,
+                generated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model_used TEXT NULL,
+                CONSTRAINT po_summaries_pkey PRIMARY KEY (id)
+            );
+        """)
+
+
+async def fetch_chat_history_by_po(po_num: str) -> List[Dict[str, Any]]:
+    """Fetch chat_history rows for a PO ordered by sent_at ASC using asyncpg pool."""
+    pool = await get_pool()
+    query = """
+        SELECT id, po_num, sender_type, message_text, direction,
+               escalation_required, vendor_phone, sent_at, intent, communication_state
+        FROM chat_history
+        WHERE po_num = $1
+        ORDER BY sent_at ASC
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, po_num)
+    return [dict(row) for row in rows]
+
+
+async def insert_po_summary(
+    po_num: str,
+    summary_text: str,
+    key_intent: str,
+    risk_level: str,
+    message_count: int,
+    model_used: str,
+) -> Dict[str, Any]:
+    """Insert a generated PO summary into po_summaries and return the stored row."""
+    pool = await get_pool()
+    query = """
+        INSERT INTO public.po_summaries
+            (po_num, summary_text, key_intent, risk_level, message_count, model_used)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, po_num, summary_text, key_intent, risk_level,
+                  message_count, generated_at, model_used
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            query, po_num, summary_text, key_intent, risk_level, message_count, model_used
+        )
+    return dict(row)
+
 
 
 async def fetch_po_data(po_id: str) -> Optional[Dict[str, Any]]:
