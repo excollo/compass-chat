@@ -155,6 +155,96 @@ async def call_agent(
     return ai_output
 
 
+SUMMARY_SYSTEM_PROMPT = (
+    "You are a procurement operations assistant for Compass Group. "
+    "Analyze this WhatsApp conversation between Compass and a supplier for a Purchase Order. "
+    "Generate a concise operational summary covering: "
+    "(1) Current PO status — confirmed, delayed, at_risk, or unresolved "
+    "(2) Key issues or exceptions raised by the supplier "
+    "(3) Any delivery dates, quantities, or reasons mentioned "
+    "(4) Whether human intervention is required. "
+    "Be factual and use procurement language."
+)
+
+_RISK_KEYWORDS = {
+    "high": {"delayed", "delay", "rejected", "cannot deliver", "escalat", "at_risk", "partial"},
+    "medium": {"unclear", "pending", "unresolved", "issue", "problem"},
+}
+
+
+def _detect_risk(summary_text: str, messages: List[Dict[str, Any]]) -> str:
+    """Derive a risk_level from summary text and intent fields in the messages."""
+    text_lower = summary_text.lower()
+    intents = {(m.get("intent") or "").lower() for m in messages}
+    combined = text_lower + " " + " ".join(intents)
+
+    for word in _RISK_KEYWORDS["high"]:
+        if word in combined:
+            return "high"
+    for word in _RISK_KEYWORDS["medium"]:
+        if word in combined:
+            return "medium"
+    return "none"
+
+
+def _derive_key_intent(messages: List[Dict[str, Any]]) -> str:
+    """Return the most significant intent found in the conversation."""
+    priority = ["REJECTED", "DELAYED", "PARTIAL", "ESCALATED", "CONFIRMED", "INFO_QUERY", "UNCLEAR"]
+    intents_found = {(m.get("intent") or "").upper() for m in messages}
+    for p in priority:
+        if p in intents_found:
+            return p
+    return "UNCLEAR"
+
+
+async def generate_po_summary(
+    po_num: str,
+    messages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Format chat_history rows into a transcript and call OpenAI to produce
+    a procurement operational summary.  Uses the same _client / OPENAI_MODEL /
+    response-parsing pattern as call_agent and summarize_handback.
+    """
+    # Build a readable transcript
+    transcript_lines: List[str] = []
+    for msg in messages:
+        sender = (msg.get("sender_type") or "unknown").upper()
+        text   = (msg.get("message_text") or "").strip()
+        ts     = str(msg.get("sent_at") or "")
+        line   = f"[{ts}] {sender}: {text}"
+        if msg.get("intent"):
+            line += f"  (intent: {msg['intent']})"
+        transcript_lines.append(line)
+
+    transcript = "\n".join(transcript_lines)
+    user_content = (
+        f"PO Number: {po_num}\n\n"
+        f"CONVERSATION TRANSCRIPT:\n{transcript}"
+    )
+
+    response = await _client.chat.completions.create(
+        model=OPENAI_MODEL,
+        temperature=OPENAI_TEMPERATURE,
+        max_tokens=600,
+        messages=[
+            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+            {"role": "user",   "content": user_content},
+        ],
+    )
+
+    summary_text: str = (response.choices[0].message.content or "").strip()
+    key_intent = _derive_key_intent(messages)
+    risk_level = _detect_risk(summary_text, messages)
+
+    return {
+        "summary_text": summary_text,
+        "key_intent":   key_intent,
+        "risk_level":   risk_level,
+        "model_used":   OPENAI_MODEL,
+    }
+
+
 async def summarize_handback(history: List[Dict[str, Any]]) -> str:
     """Ask OpenAI to summarize the human-led conversation for the bot to resume naturally."""
     if not history:
