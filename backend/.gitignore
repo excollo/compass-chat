@@ -1,10 +1,17 @@
 node_modules/
-.env
 dist/
 build/
 *.db
-.DS_Store
-node_modules/
+
+# Environment variables — never commit these
 .env
-dist/
-*.db
+.env.*
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+
+.DS_Store
