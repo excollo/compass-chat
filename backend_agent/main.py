@@ -7,18 +7,9 @@ from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import call_agent, summarize_handback, generate_po_summary
-from config import BACKEND_URL, PORT, OPENAI_API_KEY
-from database import (
-    close_pool,
-    ensure_tables,
-    fetch_po_data,
-    format_po_block,
-    fetch_chat_history,
-    fetch_chat_history_by_po,
-    insert_po_summary,
-    update_thread_state_db,
-)
+from agent import call_agent, summarize_handback, generate_proactive_message
+from config import BACKEND_URL, PORT
+from database import close_pool, fetch_po_data, format_po_block, fetch_chat_history, update_thread_state_db
 from intent_parser import parse_intent
 
 logging.basicConfig(
@@ -292,6 +283,55 @@ async def webhook_handback(body: HandbackBody, background_tasks: BackgroundTasks
         logger.info(f"PO {po_id} state updated to bot_active with summary.")
 
     background_tasks.add_task(process_handback)
+    return {"status": "accepted"}
+
+
+class ProactiveUpdateBody(BaseModel):
+    po_id: str
+    supplier_name: str
+    vendor_phone: str
+    changes: list[str]
+
+
+@app.post("/webhook/proactive-update")
+async def webhook_proactive_update(body: ProactiveUpdateBody, background_tasks: BackgroundTasks):
+    """
+    Triggered when a PO is updated in the database.
+    Generates a natural notification for the vendor about the changes.
+    """
+    po_id = body.po_id
+    vendor_phone = body.vendor_phone
+    supplier_name = body.supplier_name
+    changes = body.changes
+
+    async def process_proactive():
+        logger.info(f"Generating proactive notification for PO: {po_id}")
+        
+        # 1. Generate the AI message
+        message_text = await generate_proactive_message(po_id, changes)
+        
+        # 2. POST back to Node.js backend to save and broadcast
+        payload = {
+            "po_id":         po_id,
+            "sender_type":   "bot",
+            "sender_label":  "Compass",
+            "message_text":  message_text,
+            "vendor_phone":  vendor_phone,
+            "supplier_name": supplier_name,
+            "intent":        "PROACTIVE_UPDATE",
+            "escalate":      False,
+            "admin_message": f"Auto-Notification: PO Updated ({', '.join(changes[:2])}...)",
+            "conversation_complete": False
+        }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                await client.post(f"{BACKEND_URL}/api/chat-message", json=payload)
+                logger.info(f"Proactive notification sent for PO: {po_id}")
+            except Exception as exc:
+                logger.error(f"Failed to post proactive message: {exc}")
+
+    background_tasks.add_task(process_proactive)
     return {"status": "accepted"}
 
 
