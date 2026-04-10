@@ -153,3 +153,37 @@ async def call_agent(
         _memory[session_id] = history[-SESSION_MEMORY_WINDOW:]
 
     return ai_output
+
+
+async def summarize_handback(history: List[Dict[str, Any]]) -> str:
+    """Ask OpenAI to summarize the human-led conversation for the bot to resume naturally."""
+    if not history:
+        return ""
+
+    # Format history for summarization
+    formatted_chat = ""
+    for msg in history:
+        sender = msg.get("sender_type", "unknown")
+        text = msg.get("message_text", "")
+        formatted_chat += f"{sender.upper()}: {text}\n"
+
+    prompt = (
+        "You are an AI assistant helping a procurement bot resume a conversation. "
+        "The recent chat history below was handled by a human operator. "
+        "Summarize what was discussed and any outcome so the bot knows the current status. "
+        "Keep it concise (one short paragraph). "
+        "Do not include system messages in your summary.\n\n"
+        f"CHAT HISTORY:\n{formatted_chat}"
+    )
+
+    try:
+        response = await _client.chat.completions.create(
+            model=OPENAI_MODEL,
+            temperature=0.3,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.error(f"❌ Error in summarization: {exc}")
+        return ""

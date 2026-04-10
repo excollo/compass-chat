@@ -59,3 +59,103 @@ def format_po_block(po_data: Optional[Dict[str, Any]]) -> str:
         f"Status: {po_data.get('status', '')}"
     )
 
+
+import os
+import httpx
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+
+async def get_thread_state(po_num: str) -> dict:
+    """
+    Check Supabase via REST API for the current thread_state of a PO.
+    Returns can_bot_send=True only when thread_state is 'bot_active'.
+    """
+    try:
+        # Construct the PostgREST URL
+        # e.g., https://xyz.supabase.co/rest/v1/selected_open_po_line_items?po_num=eq.123&select=thread_state,bot_context_summary
+        url = f"{SUPABASE_URL}/rest/v1/selected_open_po_line_items"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        }
+        params = {
+            "po_num": f"eq.{po_num}",
+            "select": "thread_state,bot_context_summary"
+        }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+        if not data:
+            return {
+                "thread_state": "bot_active",
+                "bot_context_summary": None,
+                "can_bot_send": True
+            }
+
+        result = data[0]
+        state = result.get("thread_state", "bot_active")
+        return {
+            "thread_state": state,
+            "bot_context_summary": result.get("bot_context_summary"),
+            "can_bot_send": state == "bot_active"
+        }
+    except Exception as exc:
+        print(f"⚠️ [GATE] Supabase REST check failed: {exc} — defaulting to bot_active")
+        return {
+            "thread_state": "bot_active",
+            "bot_context_summary": None,
+            "can_bot_send": True
+        }
+
+
+async def fetch_chat_history(po_id: str) -> list:
+    """Fetch the full chat history for a PO to summarize context."""
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/chat_history"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        }
+        params = {
+            "po_num": f"eq.{po_id}",
+            "order": "sent_at.asc"
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        print(f"❌ [DB] Failed to fetch chat history: {exc}")
+        return []
+
+
+async def update_thread_state_db(po_num: str, state: str, bot_context_summary: str = None) -> bool:
+    """Update the thread state and bot_context_summary in Supabase."""
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/selected_open_po_line_items"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Prefer": "return=minimal"
+        }
+        params = {"po_num": f"eq.{po_num}"}
+        payload = {"thread_state": state}
+        
+        if bot_context_summary:
+            from datetime import datetime
+            payload["bot_context_summary"] = bot_context_summary
+            payload["handed_back_at"] = datetime.utcnow().isoformat()
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(url, headers=headers, params=params, json=payload)
+            resp.raise_for_status()
+            return True
+    except Exception as exc:
+        print(f"❌ [DB] Failed to update thread state: {exc}")
+        return False
+

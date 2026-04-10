@@ -100,10 +100,19 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
           
           {displayMessages.map((msg, i) => {
             const isBot = msg.sender_type === 'bot';
+            const isOperator = msg.sender_type === 'operator';
+            const isSystem = msg.sender_type === 'system';
+            
+            // Hide system messages (like "Operator took over") from the vendor view
+            if (isSystem) return null;
+
+            // Treat Bot and Operator messages identically as "Compass"
+            const isCompass = isBot || isOperator;
+
             return (
-              <div key={i} className={`flex flex-col ${isBot ? 'items-start' : 'items-end'}`}>
+              <div key={i} className={`flex flex-col ${isCompass ? 'items-start' : 'items-end'}`}>
                 <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl shadow-sm relative ${
-                  isBot 
+                  isCompass 
                     ? 'bg-white text-slate-800 rounded-tl-none border border-slate-100' 
                     : 'bg-accent-green text-white rounded-tr-none'
                 }`}>
@@ -111,7 +120,7 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
                     <div className="text-[15px] leading-snug whitespace-pre-wrap font-medium flex-1 min-w-[80px]">
                       {msg.message_text}
                     </div>
-                    <div className={`text-[10px] opacity-70 shrink-0 mb-[-2px] font-bold ${isBot ? 'text-slate-500' : 'text-white'}`}>
+                    <div className={`text-[10px] opacity-70 shrink-0 mb-[-2px] font-bold ${isCompass ? 'text-slate-500' : 'text-white'}`}>
                       {msg.isInitial ? 'Auto-Request' : new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
                     </div>
                   </div>

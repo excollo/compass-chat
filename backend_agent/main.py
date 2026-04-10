@@ -6,9 +6,9 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI
 from pydantic import BaseModel
 
-from agent import call_agent
+from agent import call_agent, summarize_handback
 from config import BACKEND_URL, PORT
-from database import close_pool, fetch_po_data, format_po_block
+from database import close_pool, fetch_po_data, format_po_block, fetch_chat_history, update_thread_state_db
 from intent_parser import parse_intent
 
 logging.basicConfig(
@@ -65,7 +65,23 @@ async def process_chat(body: ChatWebhookBody) -> None:
     print(f"\n🚀 [AGENT] Received message: '{message_text}' for PO: {po_id}")
     logger.info("Processing chat | session=%s po=%s", session_id, po_id)
 
-    # 2. Fetch PO data from Postgres
+    # ── THREAD STATE GATE — check before doing anything ───────────────
+    from database import get_thread_state
+    thread_info = await get_thread_state(po_id)
+
+    if not thread_info["can_bot_send"]:
+        print(f"🛑 [AGENT] Bot paused for PO {po_id} — "
+              f"thread_state: {thread_info['thread_state']}")
+        logger.info(
+            "Bot paused | po=%s | state=%s",
+            po_id, thread_info["thread_state"]
+        )
+        return  # stop here — human is in control, do nothing
+
+    print(f"✅ [AGENT] Thread state: {thread_info['thread_state']} — proceeding")
+    # ── END GATE ───────────────────────────────────────────────────────
+
+    # 2. Fetch PO data from Postgres (existing — do not change)
     try:
         po_data = await fetch_po_data(po_id)
         print(f"📊 [AGENT] PO Data Fetch: {'SUCCESS' if po_data else 'FAILED/NOT FOUND'}")
@@ -79,7 +95,21 @@ async def process_chat(body: ChatWebhookBody) -> None:
     # 3. Call OpenAI agent
     print("🤖 [AGENT] Calling OpenAI...")
     try:
-        ai_output = await call_agent(session_id, message_text, po_data_block)
+        # inject context summary if bot is resuming after human takeover
+        context_addon = ""
+        if thread_info.get("bot_context_summary"):
+            context_addon = (
+                f"\n\nCONTEXT FROM PREVIOUS HUMAN CONVERSATION:\n"
+                f"{thread_info['bot_context_summary']}\n\n"
+                f"Use this context to continue naturally. "
+                f"Do not re-ask questions that were already answered by the operator."
+            )
+
+        ai_output = await call_agent(
+            session_id,
+            message_text,
+            po_data_block + context_addon  # inject context into PO block
+        )
         print(f"✅ [AGENT] OpenAI Response: {ai_output[:50]}...")
     except Exception as exc:
         print(f"❌ [AGENT] OpenAI call failed: {exc}")
@@ -141,6 +171,35 @@ async def webhook_chat(body: ChatWebhookBody, background_tasks: BackgroundTasks)
 @app.get("/health", status_code=200)
 async def health():
     return {"status": "ok"}
+
+
+class HandbackBody(BaseModel):
+    po_id: str
+
+
+@app.post("/webhook/handback")
+async def webhook_handback(body: HandbackBody, background_tasks: BackgroundTasks):
+    """
+    Triggered when a human hands control back to the bot.
+    Summarizes the human conversation and resets state.
+    """
+    po_id = body.po_id
+
+    async def process_handback():
+        logger.info(f"Generating handback summary for PO: {po_id}")
+        # 1. Fetch recent messages
+        history = await fetch_chat_history(po_id)
+        
+        # 2. Call LLM to summarize
+        summary = await summarize_handback(history)
+        logger.info(f"Handback summary generated: {summary[:100]}...")
+
+        # 3. Update Supabase thread_state to 'bot_active'
+        await update_thread_state_db(po_id, "bot_active", bot_context_summary=summary)
+        logger.info(f"PO {po_id} state updated to bot_active with summary.")
+
+    background_tasks.add_task(process_handback)
+    return {"status": "accepted"}
 
 
 # ---------------------------------------------------------------------------

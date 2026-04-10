@@ -107,7 +107,8 @@ const getPurchaseOrders = async () => {
         article_description as category,
         CONCAT(po_quantity, ' ', unit) as value,
         vendor_phone,
-        status
+        status,
+        thread_state
       FROM ${tableName} 
       LIMIT 10
     `;
@@ -116,7 +117,8 @@ const getPurchaseOrders = async () => {
     return rows.map(r => ({
       ...r,
       site: "Compass Site",
-      status: r.status || 'pending'
+      status: r.status || 'pending',
+      thread_state: r.thread_state || 'bot_active'
     }));
   } catch (err) {
     console.error('PO Fetch Error:', err.message);
@@ -124,11 +126,48 @@ const getPurchaseOrders = async () => {
   }
 };
 
+// HITL: Update Thread State
+const updateThreadState = async (po_num, state, metadata = {}) => {
+  console.log(`🔄 [DB] Updating thread state to '${state}' for PO: ${po_num}`);
+  
+  const sets = [`thread_state = $1`];
+  const values = [state, po_num];
+  let i = 3;
+
+  if (metadata.taken_over_at) {
+    sets.push(`taken_over_at = $${i++}`);
+    values.push(metadata.taken_over_at);
+  }
+  if (metadata.taken_over_by) {
+    sets.push(`taken_over_by = $${i++}`);
+    values.push(metadata.taken_over_by);
+  }
+  if (metadata.handed_back_at) {
+    sets.push(`handed_back_at = $${i++}`);
+    values.push(metadata.handed_back_at);
+  }
+  if (metadata.bot_context_summary) {
+    sets.push(`bot_context_summary = $${i++}`);
+    values.push(metadata.bot_context_summary);
+  }
+
+  const query = `
+    UPDATE selected_open_po_line_items 
+    SET ${sets.join(', ')}
+    WHERE po_num = $2
+    RETURNING *;
+  `;
+
+  const { rows } = await pool.query(query, values);
+  return rows[0];
+};
+
 module.exports = {
   saveMessage,
   getChatHistory,
   deleteChatHistory,
   getPurchaseOrders,
+  updateThreadState,
   initDatabase,
   pool
 };

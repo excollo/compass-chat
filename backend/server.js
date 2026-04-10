@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { saveMessage, getChatHistory, deleteChatHistory, getPurchaseOrders, initDatabase } = require('./database');
+const { saveMessage, getChatHistory, deleteChatHistory, getPurchaseOrders, updateThreadState, initDatabase } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
@@ -95,31 +95,77 @@ app.post('/api/chat-message', async (req, res) => {
       sent_at: saved.sent_at 
     });
 
-    // Forward to n8n if sender is vendor
+    // Forward vendor messages to Python orchestration backend
+    // Python will check thread_state and decide whether bot should respond
+    // Operator messages are NOT forwarded — they are human-to-vendor directly
     if (sender_type === 'vendor') {
-      if (N8N_WEBHOOK_URL) {
-        console.log(`🚀 [BACKEND] Forwarding to n8n: ${N8N_WEBHOOK_URL}`);
-        try {
-          const resp = await axios.post(N8N_WEBHOOK_URL, {
-            session_id: po_id, 
-            po_id,
-            supplier_name,
-            vendor_phone,
-            message_text,
-            timestamp: saved.sent_at
-          });
-          console.log(`✅ [BACKEND] n8n Response: ${resp.status} ${JSON.stringify(resp.data)}`);
-        } catch (err) {
-          console.error(`❌ [BACKEND] n8n Webhook Error: ${err.message}`);
-        }
-      } else {
-        console.error("⚠️ [BACKEND] N8N_WEBHOOK_URL is not defined!");
+      const PYTHON_BACKEND_URL = (process.env.PYTHON_BACKEND_URL || 'http://localhost:8000').trim();
+      console.log(`🚀 [BACKEND] Forwarding vendor message to Python: ${PYTHON_BACKEND_URL}/webhook/chat`);
+      try {
+        const resp = await axios.post(`${PYTHON_BACKEND_URL}/webhook/chat`, {
+          session_id: po_id,
+          po_id,
+          supplier_name,
+          vendor_phone,
+          message_text,
+          timestamp: saved.sent_at
+        });
+        console.log(`✅ [BACKEND] Python Response: ${resp.status}`);
+      } catch (err) {
+        console.error(`❌ [BACKEND] Python Webhook Error: ${err.message}`);
       }
     }
 
 
 
     res.json(saved);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Take over conversation (HITL)
+app.post('/api/takeover', async (req, res) => {
+  try {
+    const { po_num, operator_name } = req.body;
+    if (!po_num) return res.status(400).json({ error: 'po_num is required' });
+    console.log(`🤝 [BACKEND] Operator ${operator_name || 'Admin'} taking over PO: ${po_num}`);
+    // 1. Update thread_state in Postgres
+    await updateThreadState(po_num, 'human_controlled', {
+      taken_over_at: new Date().toISOString(),
+      taken_over_by: operator_name || 'Admin'
+    });
+    // 2. Save system message
+    await saveMessage(po_num, 'system', `Operator ${operator_name || 'Admin'} took over. Bot is paused.`, '', null, false);
+    // 3. Broadcast update to all connected clients
+    broadcast({ event: 'thread_state_change', po_id: po_num, thread_state: 'human_controlled' });
+    res.json({ success: true, thread_state: 'human_controlled' });
+  } catch (error) {
+    console.error('❌ [BACKEND] Takeover Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Hand back to bot (HITL)
+app.post('/api/handback', async (req, res) => {
+  try {
+    const { po_num, operator_name } = req.body;
+    if (!po_num) return res.status(400).json({ error: 'po_num is required' });
+    console.log(`🤖 [BACKEND] Handing back PO: ${po_num} to Bot`);
+    // Forward to Python backend for summary generation
+    const PYTHON_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+    try {
+      await axios.post(`${PYTHON_URL}/webhook/handback`, { po_id: po_num });
+    } catch (err) {
+      console.error(`❌ [BACKEND] Python Handback Warning: ${err.message}`);
+      // Fallback: update state even if python summary fails
+      await updateThreadState(po_num, 'bot_active');
+    }
+    // Save system message
+    await saveMessage(po_num, 'system', `Bot resumed by operator.`, '', null, false);
+    // Broadcast update
+    broadcast({ event: 'thread_state_change', po_id: po_num, thread_state: 'bot_active' });
+    res.json({ success: true, thread_state: 'bot_active' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

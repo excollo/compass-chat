@@ -15,6 +15,7 @@ function App() {
   });
   const [messages, setMessages] = useState({}); // po_id -> [messages]
   const [isTyping, setIsTyping] = useState({}); // po_id -> boolean
+  const [threadStates, setThreadStates] = useState({}); // po_id -> string ('bot_active', 'human_controlled', etc.)
   const [ws, setWs] = useState(null);
 
   const activePo = poList.find(p => p.po_id === activePoId) || poList[0];
@@ -32,8 +33,15 @@ function App() {
     try {
       const { data } = await axios.get(`${API_BASE}/purchase-orders`);
       setPoList(data);
-      if (data.length > 0 && !activePoId) {
-        setActivePoId(data[0].po_id);
+      if (data.length > 0) {
+        if (!activePoId) setActivePoId(data[0].po_id);
+        
+        // Initialize thread states from PO data
+        const initialStates = {};
+        data.forEach(po => {
+          initialStates[po.po_id] = po.thread_state || 'bot_active';
+        });
+        setThreadStates(prev => ({ ...initialStates, ...prev }));
       }
     } catch (err) {
       console.error('Failed to fetch PO list from DB:', err);
@@ -86,6 +94,16 @@ function App() {
           setIsTyping(prev => ({ ...prev, [po_id]: false }));
         }
       }
+
+      if (data.event === 'thread_state_change') {
+        const { po_id, thread_state } = data;
+        setThreadStates(prev => ({ ...prev, [po_id]: thread_state }));
+        
+        // If human takes over, kill the typing indicator immediately
+        if (thread_state === 'human_controlled') {
+          setIsTyping(prev => ({ ...prev, [po_id]: false }));
+        }
+      }
     };
     
     socket.onclose = () => {
@@ -127,8 +145,14 @@ function App() {
     }));
 
     try {
-      // 2. Start typing indicator for bot
-      setIsTyping(prev => ({ ...prev, [activePoId]: true }));
+      // 2. Start typing indicator ONLY if bot is in control
+      const currentState = threadStates[activePoId] || 'bot_active';
+      if (currentState === 'bot_active') {
+        setIsTyping(prev => ({ ...prev, [activePoId]: true }));
+      } else {
+        // Aggressively ensure it's off if bot is paused
+        setIsTyping(prev => ({ ...prev, [activePoId]: false }));
+      }
 
       // 3. Save to backend (PostgreSQL + Agent trigger)
       await axios.post(`${API_BASE}/chat-message`, {
@@ -142,7 +166,6 @@ function App() {
     } catch (err) {
       console.error('Failed to send message:', err);
       setIsTyping(prev => ({ ...prev, [activePoId]: false }));
-      // Optional: Handle error by removing the optimistic message or showing an alert
     }
   };
 
