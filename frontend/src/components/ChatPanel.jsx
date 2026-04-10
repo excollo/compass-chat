@@ -82,10 +82,7 @@ const ChatPanel = ({ activePo, messages, onSendMessage, isTyping }) => {
             >
               🔄 Restart Chat
             </button>
-            <div className="flex items-center gap-2 px-3 py-1 bg-green-50 rounded-full border border-green-200">
-              <span className="w-2 h-2 rounded-full bg-accent-green pulse-green"></span>
-              <span className="text-[11px] font-bold text-accent-green uppercase tracking-wider">Live</span>
-            </div>
+
           </div>
         </div>
         
