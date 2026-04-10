@@ -4,11 +4,21 @@ from contextlib import asynccontextmanager
 import httpx
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import call_agent, summarize_handback
-from config import BACKEND_URL, PORT
-from database import close_pool, fetch_po_data, format_po_block, fetch_chat_history, update_thread_state_db
+from agent import call_agent, summarize_handback, generate_po_summary
+from config import BACKEND_URL, PORT, OPENAI_API_KEY
+from database import (
+    close_pool,
+    ensure_tables,
+    fetch_po_data,
+    format_po_block,
+    fetch_chat_history,
+    fetch_chat_history_by_po,
+    insert_po_summary,
+    update_thread_state_db,
+)
 from intent_parser import parse_intent
 
 logging.basicConfig(
@@ -25,6 +35,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Compass Python Orchestration Service starting up…")
+    await ensure_tables()
+    logger.info("Database tables verified/created.")
     yield
     logger.info("Shutting down — closing Postgres pool…")
     await close_pool()
@@ -35,6 +47,23 @@ app = FastAPI(
     description="Python AI microservice for vendor chat orchestration",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+# ---------------------------------------------------------------------------
+# CORS — allow the Vite dev server and any Vercel deployment
+# ---------------------------------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "https://*.vercel.app",
+        "*",          # remove this line in production and list origins explicitly
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -171,6 +200,70 @@ async def webhook_chat(body: ChatWebhookBody, background_tasks: BackgroundTasks)
 @app.get("/health", status_code=200)
 async def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Summary endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/summary/{po_num}")
+async def post_summary(po_num: str):
+    """
+    Generate and persist an AI-powered procurement summary for a PO.
+    Queries chat_history, calls OpenAI (gpt-4o-mini), stores in po_summaries.
+    """
+    from fastapi import HTTPException
+
+    # Guard: API key must be present (already enforced in config.py via os.environ,
+    # but we surface a clean 500 here if something slips through).
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
+
+    # 1. Fetch messages from chat_history via asyncpg pool
+    logger.info("Summary requested | po_num=%s", po_num)
+    messages = await fetch_chat_history_by_po(po_num)
+
+    if not messages:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No chat history found for PO {po_num}.",
+        )
+
+    # 2. Generate summary via OpenAI (same client / model as the rest of the app)
+    try:
+        result = await generate_po_summary(po_num, messages)
+    except Exception as exc:
+        logger.error("OpenAI summary failed | po_num=%s | error=%s", po_num, exc)
+        raise HTTPException(status_code=500, detail=f"OpenAI call failed: {exc}")
+
+    # 3. Persist to po_summaries
+    try:
+        stored = await insert_po_summary(
+            po_num=po_num,
+            summary_text=result["summary_text"],
+            key_intent=result["key_intent"],
+            risk_level=result["risk_level"],
+            message_count=len(messages),
+            model_used=result["model_used"],
+        )
+    except Exception as exc:
+        logger.error("DB insert failed | po_num=%s | error=%s", po_num, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to store summary: {exc}")
+
+    logger.info(
+        "Summary stored | po_num=%s | risk=%s | intent=%s",
+        po_num, stored["risk_level"], stored["key_intent"],
+    )
+
+    # 4. Return structured response
+    return {
+        "po_num":        stored["po_num"],
+        "summary":       stored["summary_text"],
+        "key_intent":    stored["key_intent"],
+        "risk_level":    stored["risk_level"],
+        "message_count": stored["message_count"],
+        "generated_at":  stored["generated_at"].isoformat() if stored["generated_at"] else None,
+    }
 
 
 class HandbackBody(BaseModel):
