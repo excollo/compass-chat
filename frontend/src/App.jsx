@@ -10,23 +10,25 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5001';
 function App() {
   const [poList, setPoList] = useState([]);
   const [activePoId, setActivePoId] = useState(() => {
-    // 1. Initialize from localStorage to persist selection across reloads
     return localStorage.getItem('activePoId') || null;
   });
-  const [messages, setMessages] = useState({}); // po_id -> [messages]
-  const [isTyping, setIsTyping] = useState({}); // po_id -> boolean
-  const [threadStates, setThreadStates] = useState({}); // po_id -> string ('bot_active', 'human_controlled', etc.)
+  const [messages, setMessages] = useState({});
+  const [isTyping, setIsTyping] = useState({});
+  const [threadStates, setThreadStates] = useState({});
   const [ws, setWs] = useState(null);
 
+  // Derive activePo and allPos reactively — no extra state needed
   const activePo = poList.find(p => p.po_id === activePoId) || poList[0];
+  const allPos = activePo
+    ? poList.filter(p => p.supplier_name === activePo.supplier_name)
+    : [];
 
-  // 2. Persist activePoId to localStorage whenever it changes
+  // Persist activePoId to localStorage whenever it changes
   useEffect(() => {
     if (activePoId) {
       localStorage.setItem('activePoId', activePoId);
     }
   }, [activePoId]);
-
 
   // Fetch POs from DB
   const fetchPurchaseOrders = useCallback(async () => {
@@ -35,7 +37,7 @@ function App() {
       setPoList(data);
       if (data.length > 0) {
         if (!activePoId) setActivePoId(data[0].po_id);
-        
+
         // Initialize thread states from PO data
         const initialStates = {};
         data.forEach(po => {
@@ -48,7 +50,7 @@ function App() {
     }
   }, [activePoId]);
 
-  // Fetch history for a PO
+  // Fetch history for a single PO
   const fetchHistory = useCallback(async (po_id) => {
     try {
       const { data } = await axios.get(`${API_BASE}/chat-history?po_id=${po_id}`);
@@ -61,35 +63,34 @@ function App() {
   // Initialize WebSocket
   useEffect(() => {
     const socket = new WebSocket(WS_URL);
-    
+
     socket.onopen = () => console.log('WebSocket Connected to ' + WS_URL);
+
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
+
       if (data.event === 'new_message') {
         const { po_id, sender_type, message_text, sent_at } = data;
-        
-        // Prevent duplicate messages if added optimistically
+
         setMessages(prev => {
           const currentMsgs = prev[po_id] || [];
-          
-          // Check if this message was already added (ignoring exact timestamp match)
-          const exists = currentMsgs.find(m => 
-            m.message_text === message_text && 
+
+          // Deduplicate — ignore if same message arrived within last 10 seconds
+          const exists = currentMsgs.find(m =>
+            m.message_text === message_text &&
             m.sender_type === sender_type &&
-            // Check if it was sent within the last 10 seconds to avoid older duplicate texts
             (new Date(sent_at) - new Date(m.sent_at) < 10000)
           );
-          
+
           if (exists) return prev;
-          
+
           return {
             ...prev,
             [po_id]: [...currentMsgs, { sender_type, message_text, sent_at }]
           };
         });
 
-        
-        // Clear typing indicator if bot responded
+        // Clear typing indicator when bot responds
         if (sender_type === 'bot') {
           setIsTyping(prev => ({ ...prev, [po_id]: false }));
         }
@@ -98,20 +99,19 @@ function App() {
       if (data.event === 'thread_state_change') {
         const { po_id, thread_state } = data;
         setThreadStates(prev => ({ ...prev, [po_id]: thread_state }));
-        
-        // If human takes over, kill the typing indicator immediately
+
+        // Kill typing indicator immediately on human takeover
         if (thread_state === 'human_controlled') {
           setIsTyping(prev => ({ ...prev, [po_id]: false }));
         }
       }
     };
-    
+
     socket.onclose = () => {
       console.log('WebSocket Disconnected, retrying...');
       setTimeout(() => {
-          // Re-initialize websocket after a delay
-          const newSocket = new WebSocket(WS_URL);
-          setWs(newSocket);
+        const newSocket = new WebSocket(WS_URL);
+        setWs(newSocket);
       }, 3000);
     };
 
@@ -119,42 +119,39 @@ function App() {
     return () => socket.close();
   }, []);
 
-  // On mount: Fetch POs
+  // On mount: fetch PO list
   useEffect(() => {
     fetchPurchaseOrders();
   }, [fetchPurchaseOrders]);
 
-  // On list change: Fetch all histories
+  // When PO list loads: fetch chat history for every PO
   useEffect(() => {
     poList.forEach(po => fetchHistory(po.po_id));
   }, [poList, fetchHistory]);
 
   const handleSendMessage = async (text) => {
     if (!activePo || !activePoId) return;
-    
+
     const sent_at = new Date().toISOString();
 
-    // 1. Optimistic UI update — show message immediately
+    // Optimistic UI — show vendor message immediately
     setMessages(prev => ({
-        ...prev,
-        [activePoId]: [...(prev[activePoId] || []), {
-            sender_type: 'vendor',
-            message_text: text,
-            sent_at
-        }]
+      ...prev,
+      [activePoId]: [
+        ...(prev[activePoId] || []),
+        { sender_type: 'vendor', message_text: text, sent_at }
+      ]
     }));
 
     try {
-      // 2. Start typing indicator ONLY if bot is in control
       const currentState = threadStates[activePoId] || 'bot_active';
+
       if (currentState === 'bot_active') {
         setIsTyping(prev => ({ ...prev, [activePoId]: true }));
       } else {
-        // Aggressively ensure it's off if bot is paused
         setIsTyping(prev => ({ ...prev, [activePoId]: false }));
       }
 
-      // 3. Save to backend (PostgreSQL + Agent trigger)
       await axios.post(`${API_BASE}/chat-message`, {
         po_id: activePoId,
         sender_type: 'vendor',
@@ -169,7 +166,6 @@ function App() {
     }
   };
 
-
   if (poList.length === 0) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[#0f172a] text-white">
@@ -183,17 +179,19 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white">
-      <Sidebar 
-        activePoId={activePoId} 
-        onSelect={(po) => setActivePoId(po.po_id)} 
-        messages={messages} 
+      <Sidebar
+        activePoId={activePoId}
+        onSelect={(po) => setActivePoId(po.po_id)}
+        messages={messages}
         poList={poList}
       />
-      <ChatPanel 
-        activePo={activePo} 
-        messages={messages[activePoId] || []} 
+      <ChatPanel
+        activePo={activePo}
+        allPos={allPos}
+        messages={messages[activePoId] || []}
         onSendMessage={handleSendMessage}
         isTyping={isTyping[activePoId]}
+        isVendorMultiple={allPos.length > 1}
       />
     </div>
   );

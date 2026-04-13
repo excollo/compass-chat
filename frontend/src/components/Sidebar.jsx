@@ -14,6 +14,41 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
     return po.status === 'pending' ? 'Awaiting Reply' : po.status;
   };
 
+  // Group all POs by vendor name — one entry per vendor
+  const vendorGroups = poList.reduce((acc, po) => {
+    const name = po.supplier_name || 'Unknown Vendor';
+    if (!acc[name]) {
+      acc[name] = [];
+    }
+    acc[name].push(po);
+    return acc;
+  }, {});
+
+  // For each vendor group, pick the most recent message across all their POs
+  const vendorList = Object.entries(vendorGroups).map(([vendorName, pos]) => {
+    // Find latest message across all POs for this vendor
+    const allMessages = pos.flatMap(po => messages[po.po_id] || []);
+    const lastMsg = allMessages.sort(
+      (a, b) => new Date(b.sent_at) - new Date(a.sent_at)
+    )[0];
+
+    // Pick most severe status across all POs
+    const statuses = pos.map(po => getStatusText(po));
+    const status = statuses.includes('Exception')
+      ? 'Exception'
+      : statuses.includes('Awaiting Reply')
+      ? 'Awaiting Reply'
+      : statuses[0];
+
+    // Check if any of this vendor's POs is active
+    const isActive = pos.some(po => po.po_id === activePoId);
+
+    // PO count badge
+    const poCount = pos.length;
+
+    return { vendorName, pos, lastMsg, status, isActive, poCount };
+  });
+
   return (
     <div className="w-[300px] border-r border-slate-200 h-screen bg-navy-900 flex flex-col text-white">
       <div className="p-6 border-b border-white/10 shrink-0">
@@ -22,41 +57,50 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {poList.map((po) => {
-          const isActive = activePoId === po.po_id;
-          const poMessages = messages[po.po_id] || [];
-          const lastMsg = poMessages[poMessages.length - 1];
-          const status = getStatusText(po);
+        {vendorList.map(({ vendorName, pos, lastMsg, status, isActive, poCount }) => (
+          <button
+            key={vendorName}
+            onClick={() => onSelect(pos[0], pos)}
+            // ↑ pass first PO as default + all POs for this vendor
+            className={`w-full text-left p-4 transition-all border-l-4 ${
+              isActive
+                ? 'bg-slate-800 border-accent-green'
+                : 'border-transparent hover:bg-slate-800/50'
+            }`}
+          >
+            <div className="flex justify-between items-start mb-1">
+              <span className="font-semibold text-sm truncate mr-2">
+                {vendorName}
+              </span>
+              <span className="text-[10px] text-slate-400 uppercase font-medium shrink-0">
+                {lastMsg
+                  ? new Date(lastMsg.sent_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : '---'}
+              </span>
+            </div>
 
-          return (
-            <button
-              key={po.po_id}
-              onClick={() => onSelect(po)}
-              className={`w-full text-left p-4 transition-all border-l-4 ${
-                isActive 
-                  ? 'bg-slate-800 border-accent-green' 
-                  : 'border-transparent hover:bg-slate-800/50'
-              }`}
-            >
-              <div className="flex justify-between items-start mb-1">
-                <span className="font-semibold text-sm">{po.po_id}</span>
-                <span className="text-[10px] text-slate-400 uppercase font-medium">
-                  {lastMsg ? new Date(lastMsg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '---'}
-                </span>
+            {/* Show PO count badge when vendor has multiple POs */}
+            {poCount > 1 && (
+              <div className="text-[10px] text-slate-400 mb-1">
+                {poCount} open POs
               </div>
-              <div className="text-xs text-slate-300 mb-2 font-medium truncate">{po.supplier_name}</div>
-              
-              <div className="flex justify-between items-center">
-                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${getStatusColor(status)}`}>
-                  {status}
-                </span>
-                <div className="text-[11px] text-slate-400 italic flex-1 ml-3 truncate">
-                  {lastMsg ? lastMsg.message_text : 'No history'}
-                </div>
+            )}
+
+            <div className="flex justify-between items-center">
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 ${getStatusColor(status)}`}
+              >
+                {status}
+              </span>
+              <div className="text-[11px] text-slate-400 italic flex-1 ml-3 truncate">
+                {lastMsg ? lastMsg.message_text : 'No history'}
               </div>
-            </button>
-          );
-        })}
+            </div>
+          </button>
+        ))}
       </div>
     </div>
   );

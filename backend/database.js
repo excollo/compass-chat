@@ -42,14 +42,32 @@ const initDatabase = async () => {
         intent TEXT,
         escalation_required BOOLEAN DEFAULT FALSE,
         vendor_phone TEXT,
-        sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        linked_pos JSONB,
+        reason TEXT
       )
     `);
 
     // Ensure columns exist (for migration if table already existed)
     console.log('🧐 Verifying database columns...');
     await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS intent TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS reason TEXT`);
     await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS escalation_required BOOLEAN DEFAULT FALSE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS communication_state TEXT DEFAULT 'awaiting'`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS risk_level TEXT DEFAULT 'none'`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS confidence_score NUMERIC(4,2)`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS extracted_eta DATE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS shortage_note TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS case_type TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'low'`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS assigned_spoc TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS sla_due_at TIMESTAMP WITH TIME ZONE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS sla_breached BOOLEAN DEFAULT FALSE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS human_takeover_at TIMESTAMP WITH TIME ZONE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS takeover_by TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS ai_paused BOOLEAN DEFAULT FALSE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS vendor_initiated BOOLEAN DEFAULT FALSE`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS reminder_count INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS linked_pos JSONB`);
     
     console.log('✅ Database initialized correctly.');
     client.release();
@@ -59,16 +77,51 @@ const initDatabase = async () => {
 };
 
 // Messaging: Save Message
-const saveMessage = async (po_num, sender_type, message_text, vendor_phone, intent = null, escalation_required = false) => {
+const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extra = {}) => {
   const direction = sender_type === 'vendor' ? 'inbound' : 'outbound';
   console.log(`📝 [DB] Saving message to chat_history...`);
   
+  const columns = [
+    'po_num', 'sender_type', 'message_text', 'direction', 'vendor_phone', 'intent', 
+    'reason', 'escalation_required', 'communication_state', 'risk_level', 'confidence_score', 
+    'extracted_eta', 'shortage_note', 'case_type', 'priority', 'assigned_spoc', 
+    'sla_due_at', 'sla_breached', 'human_takeover_at', 'takeover_by', 'ai_paused', 
+    'vendor_initiated', 'reminder_count', 'linked_pos'
+  ];
+
+  const values = [
+    po_num, 
+    sender_type, 
+    message_text, 
+    direction, 
+    vendor_phone, 
+    extra.intent || null, 
+    extra.reason || null,
+    extra.escalation_required || false,
+    extra.communication_state || (sender_type === 'bot' ? 'awaiting' : null),
+    extra.risk_level || 'none',
+    extra.confidence_score || 0.0,
+    extra.extracted_eta || null,
+    extra.shortage_note || null,
+    extra.case_type || null,
+    extra.priority || 'low',
+    extra.assigned_spoc || null,
+    extra.sla_due_at || null,
+    extra.sla_breached || false,
+    extra.human_takeover_at || null,
+    extra.takeover_by || null,
+    extra.ai_paused || false,
+    extra.vendor_initiated || false,
+    extra.reminder_count || 0,
+    extra.linked_pos ? JSON.stringify(extra.linked_pos) : null
+  ];
+
+  const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
   const query = `
-    INSERT INTO chat_history (po_num, sender_type, message_text, direction, vendor_phone, intent, escalation_required)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO chat_history (${columns.join(', ')})
+    VALUES (${placeholders})
     RETURNING *;
   `;
-  const values = [po_num, sender_type, message_text, direction, vendor_phone, intent, escalation_required];
   
   const { rows } = await pool.query(query, values);
   console.log(`✅ [DB] Message saved successfully. ID: ${rows[0].id}`);

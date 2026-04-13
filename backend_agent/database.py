@@ -100,23 +100,44 @@ async def fetch_po_data(po_id: str) -> Optional[Dict[str, Any]]:
     return dict(row)
 
 
-def format_po_block(po_data: Optional[Dict[str, Any]]) -> str:
+async def fetch_all_vendor_pos(vendor_phone: str) -> List[Dict[str, Any]]:
     """
-    Format the PO data into a structured string for the AI agent context.
+    Fetch ALL open POs for a specific vendor phone number.
+    This supports Multi-PO conversations (Situation F).
     """
-    if po_data is None:
-        return "PO Data from Database:\nNo PO data found for this PO ID."
+    pool = await get_pool()
+    query = """
+        SELECT po_num, po_date, delivery_date, vendor_name, vendor_code,
+               article_description, po_quantity, unit, status
+        FROM selected_open_po_line_items
+        WHERE vendor_phone = $1
+          AND status != 'Closed'
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, vendor_phone)
+    return [dict(row) for row in rows]
 
-    return (
-        f"PO Data from Database:\n"
-        f"PO Number: {po_data.get('po_num', '')}\n"
-        f"PO Date: {po_data.get('po_date', '')}\n"
-        f"Delivery Date: {po_data.get('delivery_date', '')}\n"
-        f"Vendor: {po_data.get('vendor_name', '')} ({po_data.get('vendor_code', '')})\n"
-        f"Quantity: {po_data.get('po_quantity', '')} {po_data.get('unit', '')}\n"
-        f"Items: {po_data.get('article_description', '')}\n"
-        f"Status: {po_data.get('status', '')}"
-    )
+
+def format_po_block(po_list: List[Dict[str, Any]]) -> str:
+    """
+    Format one or many POs into a structured string for the AI agent context.
+    """
+    if not po_list:
+        return "PO Data from Database:\nNo active PO data found for this vendor."
+
+    block = "PO Data from Database:\n"
+    for po in po_list:
+        block += (
+            f"---\n"
+            f"PO Number: {po.get('po_num', '')}\n"
+            f"PO Date: {po.get('po_date', '')}\n"
+            f"Delivery Date: {po.get('delivery_date', '')}\n"
+            f"Vendor: {po.get('vendor_name', '')} ({po.get('vendor_code', '')})\n"
+            f"Quantity: {po.get('po_quantity', '')} {po.get('unit', '')}\n"
+            f"Items: {po.get('article_description', '')}\n"
+            f"Status: {po.get('status', '')}\n"
+        )
+    return block
 
 
 import os
@@ -218,3 +239,24 @@ async def update_thread_state_db(po_num: str, state: str, bot_context_summary: s
         print(f"❌ [DB] Failed to update thread state: {exc}")
         return False
 
+async def update_po_operational_fields(po_num: str, fields: dict) -> bool:
+    """
+    Update the operational fields in Supabase selected_open_po_line_items.
+    Fields can include: risk_level, priority, communication_state, case_type, sla_due_at, etc.
+    """
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/selected_open_po_line_items"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Prefer": "return=minimal"
+        }
+        params = {"po_num": f"eq.{po_num}"}
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(url, headers=headers, params=params, json=fields)
+            resp.raise_for_status()
+            return True
+    except Exception as exc:
+        print(f"❌ [DB] Failed to update operational fields: {exc}")
+        return False

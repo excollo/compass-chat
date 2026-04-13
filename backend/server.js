@@ -256,27 +256,39 @@ app.delete('/api/chat-history', async (req, res) => {
 // API: Save and forward message
 app.post('/api/chat-message', async (req, res) => {
   try {
-    const { po_id, sender_type, message_text, vendor_phone, supplier_name, intent, escalate, admin_message, conversation_complete } = req.body;
+    const { 
+      po_id, sender_type, message_text, vendor_phone, supplier_name, 
+      intent, reason, escalation_required, admin_message, conversation_complete,
+      communication_state, risk_level, priority, sla_due_at, case_type,
+      extracted_eta, shortage_note, ai_paused, vendor_initiated,
+      confidence_score, linked_pos
+    } = req.body;
     
     console.log(`📩 [BACKEND] Message received from ${sender_type} for PO: ${po_id}`);
 
+    // Prepare extra data for DB save
+    const extraData = {
+      intent, reason, escalation_required, communication_state, risk_level, 
+      priority, sla_due_at, case_type, extracted_eta, shortage_note,
+      ai_paused, vendor_initiated, confidence_score, linked_pos
+    };
+
     // Save to PostgreSQL (chat_history table)
-    const saved = await saveMessage(po_id, sender_type, message_text, vendor_phone, intent, escalate);
+    const saved = await saveMessage(po_id, sender_type, message_text, vendor_phone, extraData);
     
-    // Broadcast via WebSocket
+    // Broadcast via WebSocket (including all new fields for Frontend)
     broadcast({ 
       event: 'new_message', 
       po_id, 
       sender_type, 
       message_text, 
-      intent: intent || null,
-      escalate: escalate || false,
+      ...extraData,
       admin_message: admin_message || '',
       sent_at: saved.sent_at 
     });
 
     // If bot flagged escalation — create record in Supabase escalations table
-    if (escalate === true && sender_type === 'bot' && intent) {
+    if (escalation_required === true && sender_type === 'bot' && intent) {
       console.log(`🚨 [ESCALATION] Bot flagged escalation for PO ${po_id} — intent: ${intent}`);
       
       const escalationRecord = await createEscalationInSupabase({

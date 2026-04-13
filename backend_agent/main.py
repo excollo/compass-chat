@@ -7,7 +7,15 @@ from fastapi import BackgroundTasks, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import call_agent, summarize_handback, generate_proactive_message, generate_po_summary
+from agent import (
+    call_agent, 
+    summarize_handback, 
+    generate_proactive_message, 
+    generate_po_summary,
+    parse_intent_json,
+    extract_message_text,
+    derive_fields_from_intent
+)
 from config import BACKEND_URL, PORT, OPENAI_API_KEY
 from database import (
     close_pool, 
@@ -17,9 +25,11 @@ from database import (
     update_thread_state_db,
     ensure_tables,
     fetch_chat_history_by_po,
-    insert_po_summary
+    insert_po_summary,
+    fetch_all_vendor_pos,
+    update_po_operational_fields
 )
-from intent_parser import parse_intent
+# from intent_parser import parse_intent  # Deprecated in favor of agent.py helpers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,16 +120,17 @@ async def process_chat(body: ChatWebhookBody) -> None:
     print(f"✅ [AGENT] Thread state: {thread_info['thread_state']} — proceeding")
     # ── END GATE ───────────────────────────────────────────────────────
 
-    # 2. Fetch PO data from Postgres (existing — do not change)
+    # 2. Fetch ALL relevant PO data for this vendor (Multi-PO Support)
     try:
-        po_data = await fetch_po_data(po_id)
-        print(f"📊 [AGENT] PO Data Fetch: {'SUCCESS' if po_data else 'FAILED/NOT FOUND'}")
+        # Instead of just one PO, we get everything the vendor is working on
+        po_list = await fetch_all_vendor_pos(vendor_phone)
+        print(f"📊 [AGENT] Fetched {len(po_list)} POs for vendor: {vendor_phone}")
     except Exception as exc:
         print(f"❌ [AGENT] Postgres fetch failed: {exc}")
-        logger.error("Postgres fetch failed for po_id=%s: %s", po_id, exc)
-        po_data = None
+        logger.error("Postgres fetch failed for vendor_phone=%s: %s", vendor_phone, exc)
+        po_list = []
 
-    po_data_block = format_po_block(po_data)
+    po_data_block = format_po_block(po_list)
 
     # 3. Call OpenAI agent
     print("🤖 [AGENT] Calling OpenAI...")
@@ -145,25 +156,65 @@ async def process_chat(body: ChatWebhookBody) -> None:
         logger.error("OpenAI call failed for session=%s: %s", session_id, exc)
         return 
 
-    # 4. Parse intent
-    reply_text, intent_data, should_escalate, admin_message = parse_intent(
-        ai_output, po_id, message_text
-    )
-    po_num = intent_data["po_num"]
+    # 4. Parse intent and message content
+    intent_data = parse_intent_json(ai_output)
+    reply_text = extract_message_text(ai_output)
+    
+    # po_num fallback
+    po_num = intent_data.get("po_num") or po_id
+    intent = intent_data.get("intent", "UNCLEAR")
 
-    # 5. POST bot reply back to Node.js backend
+    # Determine PO category (could be fetched from DB, defaulting to non_perishable)
+    po_category = "non_perishable"
+    # Logic to derive category from po_data if needed:
+    # if "milk" in str(po_data).lower(): po_category = "perishable"
+
+    # Derive operational fields (risk, priority, SLA)
+    derived = derive_fields_from_intent(intent, po_category)
+
+    # 5. AI Auto-Pause Logic
+    if intent_data.get("ai_paused"):
+        print(f"⚠️ [AGENT] AI detected need for pause (Intent: {intent}). Updating thread state.")
+        await update_thread_state_db(po_num, "human_controlled")
+        logger.info("AI Auto-Paused | po=%s | reason=%s", po_num, intent)
+
+    # 5b. Sync operational fields back to Database (for Dashboard display)
+    # Note: These columns must exist in your selected_open_po_line_items table!
+    db_update_fields = {
+        "risk_level": derived["risk_level"],
+        "priority": derived["priority"],
+        "communication_state": derived["communication_state"],
+        "case_type": derived["case_type"],
+        "sla_due_at": derived["sla_due_at"],
+        "extracted_eta": intent_data.get("extracted_eta"),
+        "shortage_note": intent_data.get("shortage_note")
+    }
+    await update_po_operational_fields(po_num, db_update_fields)
+
+    # 6. POST bot reply back to Node.js backend
     payload = {
-        "po_id":         po_num,
-        "sender_type":   "bot",
-        "sender_label":  "Compass Bot",
-        "message_text":  reply_text,
-        "vendor_phone":  vendor_phone,
-        "supplier_name": body.supplier_name,
-        "intent":        intent_data.get("intent"),
-        "reason":        intent_data.get("reason", ""),
-        "escalate":      should_escalate,
-        "admin_message": admin_message,
-        "conversation_complete": intent_data.get("conversation_complete", False)
+        "po_id":                po_num,
+        "sender_type":          "bot",
+        "sender_label":         "Compass Bot",
+        "message_text":         reply_text,
+        "vendor_phone":         vendor_phone,
+        "supplier_name":        body.supplier_name,
+        "intent":               intent,
+        "reason":               intent_data.get("reason", ""),
+        "escalation_required":  intent_data.get("escalate", False),
+        "conversation_complete": intent_data.get("conversation_complete", False),
+        # Enhanced Fields matched to your public.chat_history schema
+        "risk_level":           derived["risk_level"],
+        "priority":             derived["priority"],
+        "sla_due_at":           derived["sla_due_at"],
+        "case_type":            derived["case_type"],
+        "communication_state":  derived["communication_state"],
+        "extracted_eta":        intent_data.get("extracted_eta") if intent_data.get("extracted_eta") else None,
+        "shortage_note":        intent_data.get("shortage_note"),
+        "ai_paused":            intent_data.get("ai_paused", False),
+        "vendor_initiated":     intent_data.get("vendor_initiated", False),
+        "confidence_score":     intent_data.get("confidence_score", 0.0),
+        "linked_pos":           intent_data.get("linked_pos", [])
     }
 
     print(f"📤 [AGENT] Sending reply to Node Backend: {BACKEND_URL}/api/chat-message")
