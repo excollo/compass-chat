@@ -45,7 +45,7 @@ async def fetch_chat_history_by_po(po_num: str) -> List[Dict[str, Any]]:
     pool = await get_pool()
     query = """
         SELECT id, po_num, sender_type, message_text, direction,
-               escalation_required, vendor_phone, sent_at, intent, communication_state
+               escalation_required, vendor_phone, sent_at, intent
         FROM chat_history
         WHERE po_num = $1
         ORDER BY sent_at ASC
