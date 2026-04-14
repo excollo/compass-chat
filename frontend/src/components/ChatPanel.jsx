@@ -109,25 +109,25 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
           {
             sender_type: 'bot',
             message_text:
-              'System (Day -7): Initial outreach message sent regarding PO 4100260367.',
+              'Day-7: Initial outreach message sent regarding PO 4100260367.',
             sent_at: '2026-04-07T09:00:00Z',
           },
           {
             sender_type: 'bot',
             message_text:
-              'System (Day -5): First reminder — PO 4100260367 delivery is approaching. Please confirm status.',
+              'Day-5: First reminder — PO 4100260367 delivery is approaching. Please confirm status.',
             sent_at: '2026-04-09T10:30:00Z',
           },
           {
             sender_type: 'bot',
             message_text:
-              "System (Day -3): Second reminder — PO 4100260367 is due in 3 days. We haven't heard from you.",
+              "Day-3: Second reminder — PO 4100260367 is due in 3 days. We haven't heard from you.",
             sent_at: '2026-04-11T14:15:00Z',
           },
           {
             sender_type: 'bot',
             message_text:
-              'System (Day -1): Final reminder — PO 4100260367 is due tomorrow. Please confirm IMMEDIATELY.',
+              'Day-1: Final reminder — PO 4100260367 is due tomorrow. Please confirm IMMEDIATELY.',
             sent_at: '2026-04-13T16:45:00Z',
           },
         ]
