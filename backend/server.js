@@ -276,15 +276,32 @@ app.post('/api/chat-message', async (req, res) => {
     // Save to PostgreSQL (chat_history table)
     const saved = await saveMessage(po_id, sender_type, message_text, vendor_phone, extraData);
     
-    // Broadcast via WebSocket (including all new fields for Frontend)
-    broadcast({ 
-      event: 'new_message', 
-      po_id, 
-      sender_type, 
-      message_text, 
-      ...extraData,
-      admin_message: admin_message || '',
-      sent_at: saved.sent_at 
+    // Identify all sibling POs for this vendor to ensure real-time sync across all views
+    let siblingPoIds = [po_id];
+    try {
+      const { data: siblingPos } = await supabase
+        .from('selected_open_po_line_items')
+        .select('po_num')
+        .eq('vendor_phone', vendor_phone);
+      
+      if (siblingPos && siblingPos.length > 0) {
+        siblingPoIds = [...new Set(siblingPos.map(p => p.po_num))];
+      }
+    } catch (err) {
+      console.error(`⚠️ [SYNC] Failed to fetch sibling POs:`, err.message);
+    }
+
+    // Broadcast to every sibling PO ID
+    siblingPoIds.forEach(targetId => {
+      broadcast({ 
+        event: 'new_message', 
+        po_id: targetId, 
+        sender_type, 
+        message_text, 
+        ...extraData,
+        admin_message: admin_message || '',
+        sent_at: saved.sent_at 
+      });
     });
 
     // If bot flagged escalation — create record in Supabase escalations table

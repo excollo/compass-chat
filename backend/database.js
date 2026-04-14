@@ -131,21 +131,43 @@ const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extr
 
 
 
-// Messaging: Get Chat History (Mapping and Sorting)
+// Messaging: Get Chat History (Consolidated by Vendor)
 const getChatHistory = async (po_num) => {
-  const query = `SELECT * FROM chat_history WHERE po_num = $1 ORDER BY sent_at ASC`;
-  const { rows } = await pool.query(query, [po_num]);
+  // 1. First, find who this PO belongs to (phone number)
+  const phoneQuery = `SELECT DISTINCT vendor_phone FROM chat_history WHERE po_num = $1 LIMIT 1`;
+  const phoneResult = await pool.query(phoneQuery, [po_num]);
+  const vendor_phone = phoneResult.rows.length > 0 ? phoneResult.rows[0].vendor_phone : null;
+
+  if (!vendor_phone) {
+    // If no history exists yet in the local DB, try to just return whatever matches po_num
+    const fallbackQuery = `SELECT * FROM chat_history WHERE po_num = $1 ORDER BY sent_at ASC`;
+    const { rows } = await pool.query(fallbackQuery, [po_num]);
+    return rows.map(r => ({ ...r, po_id: r.po_num }));
+  }
+
+  // 2. Return the UNIFIED history for this entire vendor
+  const query = `SELECT * FROM chat_history WHERE vendor_phone = $1 ORDER BY sent_at ASC`;
+  const { rows } = await pool.query(query, [vendor_phone]);
   return rows.map(r => ({
     ...r,
-    po_id: r.po_num // Ensure internal frontend mapping stays intact
+    po_id: r.po_num // Keep the mapping for frontend compatibility
   }));
 };
 
-// Messaging: Delete Chat History (Refresh Memory)
+// Messaging: Delete Chat History (Vendor-wide clear)
 const deleteChatHistory = async (po_num) => {
-  const query = `DELETE FROM chat_history WHERE po_num = $1`;
-  await pool.query(query, [po_num]);
-  console.log(`🗑️ [DB] Deleted chat history for PO: ${po_num}`);
+  const phoneQuery = `SELECT DISTINCT vendor_phone FROM chat_history WHERE po_num = $1 LIMIT 1`;
+  const phoneResult = await pool.query(phoneQuery, [po_num]);
+  const vendor_phone = phoneResult.rows.length > 0 ? phoneResult.rows[0].vendor_phone : null;
+
+  if (vendor_phone) {
+    const query = `DELETE FROM chat_history WHERE vendor_phone = $1`;
+    await pool.query(query, [vendor_phone]);
+    console.log(`🗑️ [DB] Deleted unified chat history for Vendor Phone: ${vendor_phone}`);
+  } else {
+    const query = `DELETE FROM chat_history WHERE po_num = $1`;
+    await pool.query(query, [po_num]);
+  }
   return true;
 };
 

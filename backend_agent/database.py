@@ -108,19 +108,31 @@ async def fetch_po_data(po_id: str) -> Optional[Dict[str, Any]]:
 
 async def fetch_all_vendor_pos(vendor_phone: str) -> List[Dict[str, Any]]:
     """
-    Fetch ALL open POs for a specific vendor phone number.
-    This supports Multi-PO conversations (Situation F).
+    Fetch ALL open POs belonging to the same vendor entity as the phone number.
+    Uses vendor_code to link POs that might have different phone numbers.
     """
     pool = await get_pool()
-    query = """
-        SELECT po_num, po_date, delivery_date, vendor_name, vendor_code,
-               article_description, po_quantity, unit, status
-        FROM selected_open_po_line_items
-        WHERE vendor_phone = $1
-          AND status != 'Closed'
-    """
+    
+    # 1. Find all vendor_codes associated with this phone number
+    code_query = "SELECT DISTINCT vendor_code FROM selected_open_po_line_items WHERE vendor_phone = $1"
+    
     async with pool.acquire() as conn:
-        rows = await conn.fetch(query, vendor_phone)
+        code_rows = await conn.fetch(code_query, vendor_phone)
+        vendor_codes = [r['vendor_code'] for r in code_rows if r['vendor_code']]
+        
+        if not vendor_codes:
+            return []
+            
+        # 2. Fetch all open POs for these vendor_codes
+        po_query = """
+            SELECT po_num, po_date, delivery_date, vendor_name, vendor_code,
+                   article_description, po_quantity, unit, status, vendor_phone
+            FROM selected_open_po_line_items
+            WHERE vendor_code = ANY($1)
+              AND status != 'Closed'
+        """
+        rows = await conn.fetch(po_query, vendor_codes)
+        
     return [dict(row) for row in rows]
 
 

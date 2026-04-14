@@ -131,8 +131,15 @@ async def process_chat(body: ChatWebhookBody) -> None:
         po_list = []
 
     po_data_block = format_po_block(po_list)
+    print(f"📦 [AGENT] Full PO Context for Vendor (Phone: {vendor_phone}):\n{po_data_block}")
 
     # 3. Call OpenAI agent
+    # We use vendor_code as the session_id to unify memory across all POs of this vendor
+    # fallback to po_id if no codes found (shouldn't happen with the new fetch logic)
+    vendor_codes = list(set([p.get('vendor_code') for p in po_list if p.get('vendor_code')]))
+    session_id = "-".join(sorted(vendor_codes)) if vendor_codes else po_id
+    
+    print(f"🧠 [AGENT] Using Session ID: {session_id} (Vendor-Centric)")
     print("🤖 [AGENT] Calling OpenAI...")
     try:
         # inject context summary if bot is resuming after human takeover
