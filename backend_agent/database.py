@@ -132,8 +132,37 @@ async def fetch_all_vendor_pos(vendor_phone: str) -> List[Dict[str, Any]]:
               AND status != 'Closed'
         """
         rows = await conn.fetch(po_query, vendor_codes)
+        po_list = [dict(row) for row in rows]
         
-    return [dict(row) for row in rows]
+        if not po_list:
+            return []
+            
+        # 3. Fetch DETAIL line items for these POs from open_po_detail
+        po_nums = [p['po_num'] for p in po_list]
+        detail_query = """
+            SELECT po_num, article_description, po_quantity, unit_description
+            FROM open_po_detail
+            WHERE po_num = ANY($1)
+        """
+        detail_rows = await conn.fetch(detail_query, po_nums)
+        
+        # 4. Group details by PO Number
+        details_map = {}
+        for d in detail_rows:
+            pnum = d['po_num']
+            if pnum not in details_map:
+                details_map[pnum] = []
+            details_map[pnum].append({
+                "description": d['article_description'],
+                "quantity": d['po_quantity'],
+                "unit": d['unit_description']
+            })
+            
+        # 5. Attach details to main PO list
+        for po in po_list:
+            po['line_items'] = details_map.get(po['po_num'], [])
+            
+    return po_list
 
 
 def format_po_block(po_list: List[Dict[str, Any]]) -> str:
@@ -144,18 +173,27 @@ def format_po_block(po_list: List[Dict[str, Any]]) -> str:
         return "PO Data from Database:\nNo active PO data found for this vendor."
 
     block = "PO Data from Database:\n"
-    for po in po_list:
+    for i, po in enumerate(po_list):
+        if i > 0:
+            block += "\n--- NEXT PO ---\n"
+            
         block += (
-            f"---\n"
             f"PO Number: {po.get('po_num', '')}\n"
             f"PO Date: {po.get('po_date', '')}\n"
             f"Delivery Date: {po.get('delivery_date', '')}\n"
             f"Vendor: {po.get('vendor_name', '')} ({po.get('vendor_code', '')})\n"
-            f"Quantity: {po.get('po_quantity', '')} {po.get('unit', '')}\n"
-            f"Items: {po.get('article_description', '')}\n"
             f"Status: {po.get('status', '')}\n"
+            f"Line Items:\n"
         )
-    return block
+        
+        items = po.get("line_items", [])
+        if items:
+            for item in items:
+                block += f"  - {item['description']} (Qty: {item['quantity']} {item['unit']})\n"
+        else:
+            block += f"  - {po.get('article_description', 'N/A')} (Qty: {po.get('po_quantity', 'N/A')} {po.get('unit', '')})\n"
+            
+    return block.strip()
 
 
 import os

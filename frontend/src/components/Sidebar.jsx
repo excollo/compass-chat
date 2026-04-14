@@ -10,9 +10,9 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
     }
   };
 
-  const getStatusText = (po) => {
-    return po.status === 'pending' ? 'Awaiting Reply' : po.status;
-  };
+  // const getStatusText = (po) => {
+  //   return po.status === 'pending' ? 'Awaiting Reply' : po.status;
+  // };
 
   // Group all POs by vendor name — one entry per vendor
   const vendorGroups = poList.reduce((acc, po) => {
@@ -32,13 +32,13 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
       (a, b) => new Date(b.sent_at) - new Date(a.sent_at)
     )[0];
 
-    // Pick most severe status across all POs
-    const statuses = pos.map(po => getStatusText(po));
-    const status = statuses.includes('Exception')
-      ? 'Exception'
-      : statuses.includes('Awaiting Reply')
-      ? 'Awaiting Reply'
-      : statuses[0];
+    // // Pick most severe status across all POs
+    // const statuses = pos.map(po => getStatusText(po));
+    // const status = statuses.includes('Exception')
+    //   ? 'Exception'
+    //   : statuses.includes('Awaiting Reply')
+    //   ? 'Awaiting Reply'
+    //   : statuses[0];
 
     // Check if any of this vendor's POs is active
     const isActive = pos.some(po => po.po_id === activePoId);

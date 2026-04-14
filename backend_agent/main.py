@@ -84,10 +84,10 @@ app.add_middleware(
 class ChatWebhookBody(BaseModel):
     session_id: str
     po_id: str
-    supplier_name: str
-    vendor_phone: str
-    message_text: str
-    timestamp: str
+    supplier_name: str = ""
+    vendor_phone: str = ""
+    message_text: str = ""
+    timestamp: str = ""
 
 
 # ---------------------------------------------------------------------------

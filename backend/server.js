@@ -352,9 +352,9 @@ app.post('/api/chat-message', async (req, res) => {
         const resp = await axios.post(`${PYTHON_BACKEND_URL}/webhook/chat`, {
           session_id: po_id,
           po_id,
-          supplier_name,
-          vendor_phone,
-          message_text,
+          supplier_name: supplier_name || "",
+          vendor_phone: vendor_phone || "",
+          message_text: message_text || "",
           timestamp: saved.sent_at
         });
         console.log(`✅ [BACKEND] Python Response: ${resp.status}`);

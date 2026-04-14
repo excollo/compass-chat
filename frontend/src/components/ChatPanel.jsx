@@ -201,12 +201,12 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
                 key={item.key}
                 className={`flex flex-col ${isCompass ? 'items-start' : 'items-end'}`}
               >
-                {/* Sender label */}
+                {/* Sender label
                 {isOperator && (
                   <span className="text-[10px] text-slate-400 mb-1 ml-1 font-semibold uppercase tracking-wide">
                     Operator
                   </span>
-                )}
+                )} */}
 
                 <div
                   className={`max-w-[85%] px-4 py-2.5 rounded-2xl shadow-sm relative ${
