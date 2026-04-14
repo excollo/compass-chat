@@ -126,20 +126,22 @@ async function createEscalationInSupabase(poData) {
     } = poData;
 
     // fetch PO details from selected_open_po_line_items
-    const { data: poRecord } = await supabase
+    const { data: poRecord, error: poError } = await supabase
       .from('selected_open_po_line_items')
       .select('*')
       .eq('po_num', po_id)
-      .single();
+      .limit(1)
+      .maybeSingle();
 
-    if (!poRecord) {
-      console.error(`❌ [ESCALATION] PO not found in Supabase: ${po_id}`);
+    if (poError || !poRecord) {
+      console.error(`❌ [ESCALATION] PO not found or query failed for: ${po_id}`, poError?.message || '');
       return null;
     }
 
-    const escalationReason = INTENT_TO_REASON[intent] || 'other';
-    const priority = INTENT_TO_PRIORITY[intent] || 'medium';
-    const category = INTENT_TO_CATEGORY[intent] || 'Operation';
+    const intentKey = (intent || '').toUpperCase().trim();
+    const escalationReason = INTENT_TO_REASON[intentKey] || 'other';
+    const priority = INTENT_TO_PRIORITY[intentKey] || 'medium';
+    const category = INTENT_TO_CATEGORY[intentKey] || 'Operation';
 
     const escalationData = {
       po_num:               po_id,
@@ -266,9 +268,23 @@ app.post('/api/chat-message', async (req, res) => {
     
     console.log(`📩 [BACKEND] Message received from ${sender_type} for PO: ${po_id}`);
 
-    // Prepare extra data for DB save
+    // Evaluate escalation FIRST so we can flag the message properly in the DB
+    const EXCEPTION_INTENTS = new Set(['PARTIAL', 'DELAYED', 'REJECTED', 'PRICE_DISPUTE', 'PRICE_UPDATE', 'PAYMENT_ISSUE', 'QUALITY_ISSUE', 'PO_CANCELLATION']);
+    const safeIntent = (intent || '').toUpperCase().trim();
+    
+    const isEscalationReq = escalation_required === true || String(escalation_required).toLowerCase() === 'true';
+    const isConvComplete  = conversation_complete === true || String(conversation_complete).toLowerCase() === 'true';
+
+    const shouldEscalate = (
+      (isEscalationReq && sender_type === 'bot' && safeIntent) ||
+      (isConvComplete && sender_type === 'bot' && safeIntent && EXCEPTION_INTENTS.has(safeIntent))
+    );
+
+    // Prepare extra data for DB save (ensuring fallback escalation triggers UI banner)
+    const finalEscalationFlag = shouldEscalate;
+
     const extraData = {
-      intent, reason, escalation_required, communication_state, risk_level, 
+      intent, reason, escalation_required: finalEscalationFlag, communication_state, risk_level, 
       priority, sla_due_at, case_type, extracted_eta, shortage_note,
       ai_paused, vendor_initiated, confidence_score, linked_pos
     };
@@ -304,9 +320,9 @@ app.post('/api/chat-message', async (req, res) => {
       });
     });
 
-    // If bot flagged escalation — create record in Supabase escalations table
-    if (escalation_required === true && sender_type === 'bot' && intent) {
-      console.log(`🚨 [ESCALATION] Bot flagged escalation for PO ${po_id} — intent: ${intent}`);
+    // If bot flagged escalation (or fallback activated above) — create record in Supabase escalations table
+    if (shouldEscalate) {
+      console.log(`🚨 [ESCALATION] Triggered for PO ${po_id} — intent: ${intent} | explicit: ${escalation_required} | conv_complete: ${conversation_complete}`);
       
       const escalationRecord = await createEscalationInSupabase({
         po_id,

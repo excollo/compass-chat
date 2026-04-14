@@ -167,8 +167,9 @@ async def process_chat(body: ChatWebhookBody) -> None:
     intent_data = parse_intent_json(ai_output)
     reply_text = extract_message_text(ai_output)
     
-    # po_num fallback
-    po_num = intent_data.get("po_num") or po_id
+    # po_num fallback (ensure it is clean)
+    extracted_po = intent_data.get("po_num")
+    po_num = str(extracted_po).replace("#", "").strip() if extracted_po else po_id
     intent = intent_data.get("intent", "UNCLEAR")
 
     # Determine PO category (could be fetched from DB, defaulting to non_perishable)
