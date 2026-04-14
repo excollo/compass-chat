@@ -9,7 +9,13 @@ async def get_pool() -> asyncpg.Pool:
     """Return (or create) the shared connection pool."""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+        # statement_cache_size=0 is REQUIRED for Supabase/PgBouncer in Transaction mode
+        _pool = await asyncpg.create_pool(
+            DATABASE_URL, 
+            min_size=1, 
+            max_size=5,
+            statement_cache_size=0
+        )
     return _pool
 
 
@@ -182,7 +188,7 @@ async def get_thread_state(po_num: str) -> dict:
         return {
             "thread_state": state,
             "bot_context_summary": result.get("bot_context_summary"),
-            "can_bot_send": state == "bot_active"
+            "can_bot_send": state != "human_controlled"
         }
     except Exception as exc:
         print(f"⚠️ [GATE] Supabase REST check failed: {exc} — defaulting to bot_active")
@@ -224,7 +230,11 @@ async def update_thread_state_db(po_num: str, state: str, bot_context_summary: s
             "Prefer": "return=minimal"
         }
         params = {"po_num": f"eq.{po_num}"}
-        payload = {"thread_state": state}
+        # Update both thread_state (for bot logic) and communication_state (for UI display)
+        payload = {
+            "thread_state": state,
+            "communication_state": state
+        }
         
         if bot_context_summary:
             from datetime import datetime
@@ -255,6 +265,8 @@ async def update_po_operational_fields(po_num: str, fields: dict) -> bool:
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.patch(url, headers=headers, params=params, json=fields)
+            if resp.status_code >= 400:
+                print(f"❌ [DB] Update failed ({resp.status_code}): {resp.text}")
             resp.raise_for_status()
             return True
     except Exception as exc:

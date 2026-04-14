@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatPanel from './components/ChatPanel';
 import axios from 'axios';
@@ -16,6 +16,12 @@ function App() {
   const [isTyping, setIsTyping] = useState({});
   const [threadStates, setThreadStates] = useState({});
   const [ws, setWs] = useState(null);
+
+  // Use a Ref to avoid stale closures in WebSocket handlers
+  const threadStatesRef = useRef({});
+  useEffect(() => {
+    threadStatesRef.current = threadStates;
+  }, [threadStates]);
 
   // Derive activePo and allPos reactively — no extra state needed
   const activePo = poList.find(p => p.po_id === activePoId) || poList[0];
@@ -60,63 +66,80 @@ function App() {
     }
   }, []);
 
-  // Initialize WebSocket
+  // Initialize WebSocket with proper reconnection and event binding
   useEffect(() => {
-    const socket = new WebSocket(WS_URL);
+    let socket;
+    let reconnectTimeout;
 
-    socket.onopen = () => console.log('WebSocket Connected to ' + WS_URL);
+    const connect = () => {
+      console.log('🔌 Connecting to WebSocket at ' + WS_URL);
+      socket = new WebSocket(WS_URL);
 
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      socket.onopen = () => {
+        console.log('✅ WebSocket Connected');
+      };
 
-      if (data.event === 'new_message') {
-        const { po_id, sender_type, message_text, sent_at } = data;
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log('📥 Received WS Event:', data.event, data.po_id);
 
-        setMessages(prev => {
-          const currentMsgs = prev[po_id] || [];
+        if (data.event === 'new_message') {
+          const { po_id, sender_type, message_text, sent_at } = data;
 
-          // Deduplicate — ignore if same message arrived within last 10 seconds
-          const exists = currentMsgs.find(m =>
-            m.message_text === message_text &&
-            m.sender_type === sender_type &&
-            (new Date(sent_at) - new Date(m.sent_at) < 10000)
-          );
+          setMessages(prev => {
+            const currentMsgs = prev[po_id] || [];
 
-          if (exists) return prev;
+            // Deduplicate — ignore if same message arrived within last 5 seconds
+            const exists = currentMsgs.find(m =>
+              m.message_text === message_text &&
+              m.sender_type === sender_type &&
+              (Math.abs(new Date(sent_at) - new Date(m.sent_at)) < 5000)
+            );
 
-          return {
-            ...prev,
-            [po_id]: [...currentMsgs, { sender_type, message_text, sent_at }]
-          };
-        });
+            if (exists) return prev;
 
-        // Clear typing indicator when bot responds
-        if (sender_type === 'bot') {
-          setIsTyping(prev => ({ ...prev, [po_id]: false }));
+            return {
+              ...prev,
+              [po_id]: [...currentMsgs, { sender_type, message_text, sent_at }]
+            };
+          });
+
+          // Manage typing indicator
+          if (sender_type === 'bot') {
+            setIsTyping(prev => ({ ...prev, [po_id]: false }));
+          } else if (sender_type === 'vendor') {
+            const currentState = threadStatesRef.current[po_id] || 'bot_active';
+            if (currentState !== 'human_controlled') {
+              setIsTyping(prev => ({ ...prev, [po_id]: true }));
+            }
+          }
         }
-      }
 
-      if (data.event === 'thread_state_change') {
-        const { po_id, thread_state } = data;
-        setThreadStates(prev => ({ ...prev, [po_id]: thread_state }));
+        if (data.event === 'thread_state_change') {
+          const { po_id, thread_state } = data;
+          setThreadStates(prev => ({ ...prev, [po_id]: thread_state }));
 
-        // Kill typing indicator immediately on human takeover
-        if (thread_state === 'human_controlled') {
-          setIsTyping(prev => ({ ...prev, [po_id]: false }));
+          // Kill typing indicator immediately on human takeover
+          if (thread_state === 'human_controlled') {
+            setIsTyping(prev => ({ ...prev, [po_id]: false }));
+          }
         }
-      }
+      };
+
+      socket.onclose = () => {
+        console.log('❌ WebSocket Disconnected, retrying in 3s...');
+        reconnectTimeout = setTimeout(connect, 3000);
+      };
+
+      setWs(socket);
     };
 
-    socket.onclose = () => {
-      console.log('WebSocket Disconnected, retrying...');
-      setTimeout(() => {
-        const newSocket = new WebSocket(WS_URL);
-        setWs(newSocket);
-      }, 3000);
-    };
+    connect();
 
-    setWs(socket);
-    return () => socket.close();
+    return () => {
+      if (socket) socket.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
   }, []);
 
   // On mount: fetch PO list
@@ -146,7 +169,8 @@ function App() {
     try {
       const currentState = threadStates[activePoId] || 'bot_active';
 
-      if (currentState === 'bot_active') {
+      // Show typing indicator only if bot is active (not human controlled)
+      if (currentState !== 'human_controlled') {
         setIsTyping(prev => ({ ...prev, [activePoId]: true }));
       } else {
         setIsTyping(prev => ({ ...prev, [activePoId]: false }));

@@ -89,31 +89,32 @@ const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extr
     'vendor_initiated', 'reminder_count', 'linked_pos'
   ];
 
+  const extraData = extra || {};
   const values = [
     po_num, 
     sender_type, 
     message_text, 
     direction, 
     vendor_phone, 
-    extra.intent || null, 
-    extra.reason || null,
-    extra.escalation_required || false,
-    extra.communication_state || (sender_type === 'bot' ? 'awaiting' : null),
-    extra.risk_level || 'none',
-    extra.confidence_score || 0.0,
-    extra.extracted_eta || null,
-    extra.shortage_note || null,
-    extra.case_type || null,
-    extra.priority || 'low',
-    extra.assigned_spoc || null,
-    extra.sla_due_at || null,
-    extra.sla_breached || false,
-    extra.human_takeover_at || null,
-    extra.takeover_by || null,
-    extra.ai_paused || false,
-    extra.vendor_initiated || false,
-    extra.reminder_count || 0,
-    extra.linked_pos ? JSON.stringify(extra.linked_pos) : null
+    extraData.intent || null, 
+    extraData.reason || null,
+    extraData.escalation_required || false,
+    extraData.communication_state || (sender_type === 'bot' ? 'awaiting' : null),
+    extraData.risk_level || 'none',
+    extraData.confidence_score || 0.0,
+    extraData.extracted_eta || null,
+    extraData.shortage_note || null,
+    extraData.case_type || null,
+    extraData.priority || 'low',
+    extraData.assigned_spoc || null,
+    extraData.sla_due_at || null,
+    extraData.sla_breached || false,
+    extraData.human_takeover_at || null,
+    extraData.takeover_by || null,
+    extraData.ai_paused || false,
+    extraData.vendor_initiated || false,
+    extraData.reminder_count || 0,
+    extraData.linked_pos ? JSON.stringify(extraData.linked_pos) : null
   ];
 
   const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
@@ -183,7 +184,7 @@ const getPurchaseOrders = async () => {
 const updateThreadState = async (po_num, state, metadata = {}) => {
   console.log(`🔄 [DB] Updating thread state to '${state}' for PO: ${po_num}`);
   
-  const sets = [`thread_state = $1`];
+  const sets = [`thread_state = $1`, `communication_state = $1`];
   const values = [state, po_num];
   let i = 3;
 

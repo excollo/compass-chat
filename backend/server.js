@@ -321,7 +321,7 @@ app.post('/api/chat-message', async (req, res) => {
       // also update thread_state to escalated
       await supabase
         .from('selected_open_po_line_items')
-        .update({ thread_state: 'escalated' })
+        .update({ thread_state: 'escalated', communication_state: 'exception_detected' })
         .eq('po_num', po_id);
     }
 
@@ -366,7 +366,7 @@ app.post('/api/takeover', async (req, res) => {
       taken_over_by: operator_name || 'Admin'
     });
     // 2. Save system message
-    await saveMessage(po_num, 'system', `Operator ${operator_name || 'Admin'} took over. Bot is paused.`, '', null, false);
+    await saveMessage(po_num, 'system', `Operator ${operator_name || 'Admin'} took over. Bot is paused.`, '', {});
     // 3. Broadcast update to all connected clients
     broadcast({ event: 'thread_state_change', po_id: po_num, thread_state: 'human_controlled' });
     res.json({ success: true, thread_state: 'human_controlled' });
@@ -392,7 +392,7 @@ app.post('/api/handback', async (req, res) => {
       await updateThreadState(po_num, 'bot_active');
     }
     // Save system message
-    await saveMessage(po_num, 'system', `Bot resumed by operator.`, '', null, false);
+    await saveMessage(po_num, 'system', `Bot resumed by operator.`, '', {});
     // Broadcast update
     broadcast({ event: 'thread_state_change', po_id: po_num, thread_state: 'bot_active' });
     res.json({ success: true, thread_state: 'bot_active' });

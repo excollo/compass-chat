@@ -179,15 +179,16 @@ async def process_chat(body: ChatWebhookBody) -> None:
         logger.info("AI Auto-Paused | po=%s | reason=%s", po_num, intent)
 
     # 5b. Sync operational fields back to Database (for Dashboard display)
-    # Note: These columns must exist in your selected_open_po_line_items table!
+    def sanitize(val):
+        """Convert empty string to None for SQL safety."""
+        return None if (isinstance(val, str) and not val.strip()) else val
+
     db_update_fields = {
-        "risk_level": derived["risk_level"],
-        "priority": derived["priority"],
-        "communication_state": derived["communication_state"],
-        "case_type": derived["case_type"],
-        "sla_due_at": derived["sla_due_at"],
-        "extracted_eta": intent_data.get("extracted_eta"),
-        "shortage_note": intent_data.get("shortage_note")
+        "communication_state": sanitize(derived["communication_state"]),
+        "risk_level": sanitize(derived["risk_level"]),
+        "last_intent": sanitize(intent),
+        "reason": sanitize(intent_data.get("reason")),
+        "ai_paused": intent_data.get("ai_paused", False)
     }
     await update_po_operational_fields(po_num, db_update_fields)
 
@@ -386,7 +387,9 @@ async def webhook_proactive_update(body: ProactiveUpdateBody, background_tasks: 
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
-                await client.post(f"{BACKEND_URL}/api/chat-message", json=payload)
+                resp = await client.post(f"{BACKEND_URL}/api/chat-message", json=payload)
+                if resp.status_code >= 400:
+                    print(f"❌ [AGENT] Proactive POST failed ({resp.status_code}): {resp.text}")
                 logger.info(f"Proactive notification sent for PO: {po_id}")
             except Exception as exc:
                 logger.error(f"Failed to post proactive message: {exc}")
