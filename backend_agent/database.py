@@ -106,21 +106,43 @@ async def fetch_po_data(po_id: str) -> Optional[Dict[str, Any]]:
     return dict(row)
 
 
-async def fetch_all_vendor_pos(vendor_phone: str) -> List[Dict[str, Any]]:
+async def fetch_all_vendor_pos(vendor_phone: str, po_id: str = "") -> List[Dict[str, Any]]:
     """
     Fetch ALL open POs belonging to the same vendor entity as the phone number.
     Uses vendor_code to link POs that might have different phone numbers.
     """
     pool = await get_pool()
     
-    # 1. Find all vendor_codes associated with this phone number
-    code_query = "SELECT DISTINCT vendor_code FROM selected_open_po_line_items WHERE vendor_phone = $1"
+    # 1. Find vendor_codes associated with this phone number (phone-normalized)
+    #    and/or the current PO as fallback.
+    code_query = """
+        SELECT DISTINCT vendor_code
+        FROM selected_open_po_line_items
+        WHERE
+          (
+            $1 <> ''
+            AND vendor_phone IS NOT NULL
+            AND regexp_replace(vendor_phone, '\\D', '', 'g') =
+                regexp_replace($1, '\\D', '', 'g')
+          )
+          OR ($2 <> '' AND po_num = $2)
+    """
     
     async with pool.acquire() as conn:
-        code_rows = await conn.fetch(code_query, vendor_phone)
+        code_rows = await conn.fetch(code_query, vendor_phone or "", po_id or "")
         vendor_codes = [r['vendor_code'] for r in code_rows if r['vendor_code']]
         
         if not vendor_codes:
+            # Final fallback: return current PO context at least, even when vendor_code is missing.
+            if po_id:
+                po_only_query = """
+                    SELECT po_num, po_date, delivery_date, vendor_name, vendor_code,
+                           article_description, po_quantity, unit, status, vendor_phone
+                    FROM selected_open_po_line_items
+                    WHERE po_num = $1
+                """
+                po_only_rows = await conn.fetch(po_only_query, po_id)
+                return [dict(row) for row in po_only_rows]
             return []
             
         # 2. Fetch all open POs for these vendor_codes
