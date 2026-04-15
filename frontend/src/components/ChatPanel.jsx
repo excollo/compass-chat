@@ -279,8 +279,8 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
 
         {/* Typing indicator */}
         {isTyping && (
-          <div className="absolute bottom-4 left-8 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <div className="bg-white/90 backdrop-blur-sm p-4 rounded-2xl rounded-tl-none shadow-md border border-slate-100 flex gap-3 items-center">
+          <div className="flex justify-start mt-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="bg-white/90 backdrop-blur-sm px-4 py-3 rounded-2xl rounded-tl-none shadow-md border border-slate-100 flex gap-3 items-center">
               <div className="flex gap-1.5 items-center">
                 <span className="dot bg-accent-green"></span>
                 <span className="dot bg-accent-green"></span>
