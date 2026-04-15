@@ -28,6 +28,19 @@ function App() {
   const allPos = activePo
     ? poList.filter(p => p.supplier_name === activePo.supplier_name)
     : [];
+  const unifiedVendorMessages = allPos
+    .flatMap(po => messages[po.po_id] || [])
+    .reduce((acc, msg) => {
+      const fallbackKey = `${msg.po_id || ''}|${msg.sender_type || ''}|${msg.message_text || ''}|${msg.sent_at || ''}`;
+      const dedupeKey = msg.id || fallbackKey;
+      if (!acc.map.has(dedupeKey)) {
+        acc.map.set(dedupeKey, true);
+        acc.list.push(msg);
+      }
+      return acc;
+    }, { map: new Map(), list: [] })
+    .list
+    .sort((a, b) => new Date(a.sent_at || 0) - new Date(b.sent_at || 0));
 
   // Persist activePoId to localStorage whenever it changes
   useEffect(() => {
@@ -84,7 +97,7 @@ function App() {
         console.log('📥 Received WS Event:', data.event, data.po_id);
 
         if (data.event === 'new_message') {
-          const { po_id, sender_type, message_text, sent_at } = data;
+          const { po_id, sender_type, message_text, sent_at, escalation_required, intent, reason } = data;
 
           setMessages(prev => {
             const currentMsgs = prev[po_id] || [];
@@ -100,7 +113,7 @@ function App() {
 
             return {
               ...prev,
-              [po_id]: [...currentMsgs, { sender_type, message_text, sent_at }]
+              [po_id]: [...currentMsgs, { sender_type, message_text, sent_at, escalation_required, intent, reason }]
             };
           });
 
@@ -209,10 +222,11 @@ function App() {
         messages={messages}
         poList={poList}
       />
+      {/* Pass a UNIFIED message history for the current vendor (combines messages from all their POs) */}
       <ChatPanel
         activePo={activePo}
         allPos={allPos}
-        messages={messages[activePoId] || []}
+        messages={unifiedVendorMessages}
         onSendMessage={handleSendMessage}
         isTyping={isTyping[activePoId]}
         isVendorMultiple={allPos.length > 1}
