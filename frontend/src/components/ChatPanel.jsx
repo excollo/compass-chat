@@ -51,7 +51,7 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
       a.getMonth() === b.getMonth() &&
       a.getFullYear() === b.getFullYear();
 
-    if (isSameDay(msgDate, today)) return 'Today';
+    if (isSameDay(msgDate, today)) return null;
     if (isSameDay(msgDate, yesterday)) return 'Yesterday';
 
     return msgDate.toLocaleDateString('en-IN', {
@@ -60,6 +60,10 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
       year: 'numeric',
     });
   };
+
+  const sortedMessages = [...messages].sort(
+    (a, b) => new Date(a.sent_at || 0) - new Date(b.sent_at || 0)
+  );
 
   // ─── Build initial bot message ────────────────────────────────────────────
   // Single PO: mention it directly
@@ -76,7 +80,6 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
       );
     }
 
-    // Multiple POs — list each with its delivery date
     const poLines = pos
       .map(
         (po, idx) =>
@@ -100,8 +103,6 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
   };
 
   // ─── Hardcoded reminder history for Yashoda Gas Service (PO 4100260367) ─────
-  // Mirrors the same messages shown on the admin side so the vendor sees the
-  // full reminder cadence that was sent before their first reply.
   const YASHODA_PO_ID = '4100260367';
   const yashodaReminderMessages =
     activePo?.po_id === YASHODA_PO_ID
@@ -133,15 +134,24 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
         ]
       : [];
 
-  const displayMessages = [initialBotMessage, ...yashodaReminderMessages, ...messages];
+  const historyHasInitial = sortedMessages.some((m) => {
+    if ((m.sender_type || '').toLowerCase().trim() !== 'bot') return false;
+    return (
+      (m.message_text || '').includes('Will you be able to deliver') ||
+      (m.message_text || '').includes('I see you have Order') ||
+      (m.message_text || '').includes('I see you have')
+    );
+  });
+
+  const displayMessages = historyHasInitial
+    ? [...yashodaReminderMessages, ...sortedMessages]
+    : [initialBotMessage, ...yashodaReminderMessages, ...sortedMessages];
 
   // ─── Inject date separators between messages ──────────────────────────────
   const messagesWithSeparators = [];
   let lastDateLabel = null;
 
   displayMessages.forEach((msg, i) => {
-    if (msg.sender_type === 'system') return; // skip system messages
-
     const label = getDateLabel(msg.sent_at);
     if (label && label !== lastDateLabel) {
       messagesWithSeparators.push({ type: 'separator', label, key: `sep-${i}` });
@@ -150,73 +160,59 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
     messagesWithSeparators.push({ type: 'message', msg, key: `msg-${i}` });
   });
 
-  // ─── Earliest delivery date for header ───────────────────────────────────
-  const earliestDelivery = (allPos.length > 0 ? allPos : [activePo])
-    .map(po => po.delivery_date)
-    .filter(Boolean)
-    .sort()[0];
-
   return (
-    <div className="flex-1 flex flex-col h-screen bg-[#f1f5f9]">
+    <div className="flex-1 flex flex-col h-screen bg-[#f8fafc]">
 
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-8 py-6 shrink-0 shadow-sm">
-        <div className="flex justify-between items-center mb-4">
+      <header className="bg-white border-b border-slate-200 px-8 py-5 shrink-0 shadow-sm z-10">
+        <div className="flex justify-between items-center">
           <div>
-            <h2 className="text-xl font-bold text-navy-900">
-              {activePo.supplier_name}
-            </h2>
-            {/* PO count badge when multiple */}
-            {allPos.length > 1 && (
-              <p className="text-slate-400 text-xs mt-0.5 font-medium">
-                {allPos.length} open purchase orders
-              </p>
+            <div className="flex items-center gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 leading-tight">
+                  {activePo.supplier_name}
+                </h2>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    AI Assistant Active
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {allPos.length <= 1 ? (
+              <span className="bg-slate-50 text-slate-500 px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-100 italic">
+                Delivery: <span className="text-slate-900 not-italic font-bold ml-1">{formatDeliveryDate(activePo.delivery_date)}</span>
+              </span>
+            ) : (
+              <div className="flex flex-col items-end">
+                <span className="text-[10px] font-bold text-slate-400 uppercase mb-1">Active Batch</span>
+                <div className="flex gap-2">
+                  {allPos.slice(0, 3).map(po => (
+                    <span key={po.po_id} className="bg-slate-50 text-[10px] font-bold px-2 py-0.5 rounded border border-slate-100">
+                      #{po.po_id}
+                    </span>
+                  ))}
+                  {allPos.length > 3 && <span className="text-[10px] font-bold text-slate-400">+{allPos.length - 3}</span>}
+                </div>
+              </div>
             )}
           </div>
         </div>
-
-        {/* Single PO: show one delivery date */}
-        {allPos.length <= 1 && (
-          <div className="flex items-center text-[12px] text-slate-500 gap-6 font-medium">
-            <span className="bg-slate-100 px-2 py-0.5 rounded italic">
-              Delivery:{' '}
-              <span className="text-navy-900 not-italic font-bold">
-                {formatDeliveryDate(activePo.delivery_date)}
-              </span>
-            </span>
-          </div>
-        )}
-
-        {/* Multiple POs: show each PO as a small pill row */}
-        {allPos.length > 1 && (
-          <div className="flex flex-wrap gap-2 mt-2">
-            {allPos.map(po => (
-              <span
-                key={po.po_id}
-                className="text-[11px] bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full font-medium border border-slate-200"
-              >
-                #{po.po_id} · {formatDeliveryDate(po.delivery_date)}
-              </span>
-            ))}
-          </div>
-        )}
       </header>
 
-      {/* Message Thread */}
-      <div className="flex-1 overflow-hidden relative flex flex-col">
-        <div className="flex-1 overflow-y-auto p-8 flex flex-col gap-4 custom-scrollbar pb-20">
-
+      {/* Chat messages */}
+      <div className="flex-1 overflow-y-auto px-8 py-10 space-y-10 flex flex-col">
+        <div className="flex-1">
           {messagesWithSeparators.map((item) => {
-
-            // ── Date separator ──────────────────────────────────────────────
             if (item.type === 'separator') {
               return (
-                <div
-                  key={item.key}
-                  className="flex items-center gap-3 my-2"
-                >
+                <div key={item.key} className="flex items-center gap-4 my-10">
                   <div className="flex-1 h-px bg-slate-200" />
-                  <span className="text-[11px] text-slate-400 font-semibold bg-slate-100 px-3 py-1 rounded-full border border-slate-200 shrink-0">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest bg-white px-4 py-1 rounded-full border border-slate-100 shadow-sm">
                     {item.label}
                   </span>
                   <div className="flex-1 h-px bg-slate-200" />
@@ -224,38 +220,43 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
               );
             }
 
-            // ── Message bubble ──────────────────────────────────────────────
             const { msg } = item;
-            const isBot = msg.sender_type === 'bot';
-            const isOperator = msg.sender_type === 'operator';
+            const senderType = (msg.sender_type || '').toLowerCase().trim();
+            const isBot = senderType === 'bot';
+            const isOperator = senderType === 'operator';
+            const isSystem = senderType === 'system';
             const isCompass = isBot || isOperator;
 
             return (
               <div
                 key={item.key}
-                className={`flex flex-col ${isCompass ? 'items-start' : 'items-end'}`}
+                className={`flex w-full mb-2 ${
+                  isSystem ? 'justify-center' : isCompass ? 'justify-start' : 'justify-end'
+                }`}
               >
-                {/* Sender label
-                {isOperator && (
-                  <span className="text-[10px] text-slate-400 mb-1 ml-1 font-semibold uppercase tracking-wide">
-                    Operator
-                  </span>
-                )} */}
-
-                <div
-                  className={`max-w-[85%] px-4 py-2.5 rounded-2xl shadow-sm relative ${
-                    isCompass
-                      ? 'bg-white text-slate-800 rounded-tl-none border border-slate-100'
-                      : 'bg-accent-green text-white rounded-tr-none'
-                  }`}
-                >
-                  <div className="flex flex-wrap items-end justify-end gap-x-4 gap-y-1">
-                    <div className="text-[15px] leading-snug whitespace-pre-wrap font-medium flex-1 min-w-[80px]">
+                {/* Message */}
+                <div className={`flex flex-col ${isSystem ? 'max-w-[85%] items-center' : 'max-w-[75%]'}`}>
+                  <div
+                    className={`px-5 py-3.5 rounded-2xl shadow-sm relative group ${
+                      isSystem
+                        ? 'bg-amber-50 text-amber-800 border border-amber-100 rounded-xl'
+                        : isCompass
+                        ? 'bg-white text-slate-800 rounded-tl-none border border-slate-200'
+                        : 'bg-[#0047cc] text-white rounded-tr-none'
+                    }`}
+                  >
+                    <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-medium break-words">
                       {msg.message_text}
                     </div>
+                    
+                    {/* Time */}
                     <div
-                      className={`text-[10px] opacity-70 shrink-0 mb-[-2px] font-bold ${
-                        isCompass ? 'text-slate-500' : 'text-white'
+                      className={`text-[9px] mt-1.5 font-bold tracking-tight uppercase opacity-50 ${
+                        isSystem
+                          ? 'text-amber-700'
+                          : isCompass
+                          ? 'text-slate-500'
+                          : 'text-white'
                       }`}
                     >
                       {msg.isInitial
@@ -263,13 +264,14 @@ const ChatPanel = ({ activePo, allPos = [], messages, onSendMessage, isTyping, i
                         : new Date(msg.sent_at).toLocaleTimeString([], {
                             hour: '2-digit',
                             minute: '2-digit',
-                            hour12: false,
+                            hour12: true,
                           })}
                     </div>
                   </div>
                 </div>
               </div>
             );
+
           })}
 
           <div ref={scrollRef} />
