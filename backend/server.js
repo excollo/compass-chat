@@ -275,13 +275,14 @@ app.post('/api/chat-message', async (req, res) => {
     const isEscalationReq = escalation_required === true || String(escalation_required).toLowerCase() === 'true';
     const isConvComplete  = conversation_complete === true || String(conversation_complete).toLowerCase() === 'true';
 
-    const shouldEscalate = (
+    const shouldEscalate = !!(
       (isEscalationReq && sender_type === 'bot' && safeIntent) ||
       (isConvComplete && sender_type === 'bot' && safeIntent && EXCEPTION_INTENTS.has(safeIntent))
     );
 
     // Prepare extra data for DB save (ensuring fallback escalation triggers UI banner)
     const finalEscalationFlag = shouldEscalate;
+
 
     const extraData = {
       intent, reason, escalation_required: finalEscalationFlag, communication_state, risk_level, 
