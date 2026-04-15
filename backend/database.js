@@ -133,20 +133,55 @@ const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extr
 
 // Messaging: Get Chat History (Consolidated by Vendor)
 const getChatHistory = async (po_num) => {
-  // 1. First, find who this PO belongs to (phone number)
-  const phoneQuery = `SELECT DISTINCT vendor_phone FROM chat_history WHERE po_num = $1 LIMIT 1`;
-  const phoneResult = await pool.query(phoneQuery, [po_num]);
-  const vendor_phone = phoneResult.rows.length > 0 ? phoneResult.rows[0].vendor_phone : null;
+  // 1) Prefer vendor phone from chat_history for this PO
+  let vendor_phone = null;
+  const phoneFromHistoryQuery = `
+    SELECT vendor_phone
+    FROM chat_history
+    WHERE po_num = $1
+      AND vendor_phone IS NOT NULL
+      AND vendor_phone <> ''
+    ORDER BY sent_at DESC
+    LIMIT 1
+  `;
+  const phoneFromHistory = await pool.query(phoneFromHistoryQuery, [po_num]);
+  if (phoneFromHistory.rows.length > 0) {
+    vendor_phone = phoneFromHistory.rows[0].vendor_phone;
+  }
+
+  // 2) If no phone found in chat history, derive it from live PO table
+  if (!vendor_phone) {
+    const phoneFromPoTableQuery = `
+      SELECT vendor_phone
+      FROM selected_open_po_line_items
+      WHERE po_num = $1
+        AND vendor_phone IS NOT NULL
+        AND vendor_phone <> ''
+      LIMIT 1
+    `;
+    const phoneFromPoTable = await pool.query(phoneFromPoTableQuery, [po_num]);
+    if (phoneFromPoTable.rows.length > 0) {
+      vendor_phone = phoneFromPoTable.rows[0].vendor_phone;
+    }
+  }
 
   if (!vendor_phone) {
-    // If no history exists yet in the local DB, try to just return whatever matches po_num
+    // Final fallback: PO-specific history only
     const fallbackQuery = `SELECT * FROM chat_history WHERE po_num = $1 ORDER BY sent_at ASC`;
     const { rows } = await pool.query(fallbackQuery, [po_num]);
     return rows.map(r => ({ ...r, po_id: r.po_num }));
   }
 
-  // 2. Return the UNIFIED history for this entire vendor
-  const query = `SELECT * FROM chat_history WHERE vendor_phone = $1 ORDER BY sent_at ASC`;
+  // 3) Return unified history for this vendor with phone-normalized match
+  const query = `
+    SELECT *
+    FROM chat_history
+    WHERE
+      vendor_phone = $1
+      OR regexp_replace(COALESCE(vendor_phone, ''), '\\D', '', 'g') =
+         regexp_replace(COALESCE($1, ''), '\\D', '', 'g')
+    ORDER BY sent_at ASC
+  `;
   const { rows } = await pool.query(query, [vendor_phone]);
   return rows.map(r => ({
     ...r,
