@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+import re
 
 import httpx
 import uvicorn
@@ -36,6 +37,86 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _extract_po_numbers(po_list: list[dict]) -> list[str]:
+    seen = set()
+    po_numbers = []
+    for po in po_list or []:
+        po_num = str(po.get("po_num", "")).strip()
+        if po_num and po_num not in seen:
+            seen.add(po_num)
+            po_numbers.append(po_num)
+    return po_numbers
+
+
+def _message_mentions_po(message_text: str, po_numbers: list[str]) -> bool:
+    msg = (message_text or "").lower()
+    for po in po_numbers:
+        po_clean = po.strip()
+        if not po_clean:
+            continue
+        if po_clean.lower() in msg or f"#{po_clean.lower()}" in msg:
+            return True
+    return False
+
+
+def _message_matches_unique_item(message_text: str, po_list: list[dict]) -> bool:
+    """
+    Returns True only when message clearly matches line items of exactly one PO.
+    This is a conservative fallback to avoid false routing.
+    """
+    msg = (message_text or "").lower().strip()
+    if not msg:
+        return False
+
+    matched_po_nums = set()
+    for po in po_list or []:
+        po_num = str(po.get("po_num", "")).strip()
+        if not po_num:
+            continue
+
+        item_candidates = []
+        for li in po.get("line_items", []) or []:
+            desc = str(li.get("description", "")).strip().lower()
+            if desc:
+                item_candidates.append(desc)
+
+        article_desc = str(po.get("article_description", "")).strip().lower()
+        if article_desc:
+            item_candidates.append(article_desc)
+
+        for candidate in item_candidates:
+            # Avoid tiny tokens causing accidental matches.
+            if len(candidate) >= 8 and candidate in msg:
+                matched_po_nums.add(po_num)
+                break
+
+    return len(matched_po_nums) == 1
+
+
+def _build_disambiguation_prompt(po_numbers: list[str]) -> str:
+    if not po_numbers:
+        return "Got it — which order are you referring to?"
+    if len(po_numbers) == 1:
+        return f"Got it — are you referring to order #{po_numbers[0]}?"
+    if len(po_numbers) == 2:
+        return f"Got it — which order are you referring to, #{po_numbers[0]} or #{po_numbers[1]}?"
+
+    head = ", ".join(f"#{p}" for p in po_numbers[:-1])
+    tail = f"#{po_numbers[-1]}"
+    return f"Got it — which order are you referring to: {head}, or {tail}?"
+
+
+def _is_ambiguous_multi_po_message(message_text: str, po_list: list[dict]) -> bool:
+    po_numbers = _extract_po_numbers(po_list)
+    if len(po_numbers) <= 1:
+        return False
+    if _message_mentions_po(message_text, po_numbers):
+        return False
+    if _message_matches_unique_item(message_text, po_list):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +204,7 @@ async def process_chat(body: ChatWebhookBody) -> None:
     # 2. Fetch ALL relevant PO data for this vendor (Multi-PO Support)
     try:
         # Instead of just one PO, we get everything the vendor is working on
-        po_list = await fetch_all_vendor_pos(vendor_phone)
+        po_list = await fetch_all_vendor_pos(vendor_phone, po_id)
         print(f"📊 [AGENT] Fetched {len(po_list)} POs for vendor: {vendor_phone}")
     except Exception as exc:
         print(f"❌ [AGENT] Postgres fetch failed: {exc}")
@@ -132,6 +213,73 @@ async def process_chat(body: ChatWebhookBody) -> None:
 
     po_data_block = format_po_block(po_list)
     print(f"📦 [AGENT] Full PO Context for Vendor (Phone: {vendor_phone}):\n{po_data_block}")
+
+    # 2b. Deterministic multi-PO guard:
+    # If vendor has multiple open POs and message doesn't identify a PO,
+    # force a disambiguation question instead of relying only on prompt compliance.
+    if _is_ambiguous_multi_po_message(message_text, po_list):
+        po_numbers = _extract_po_numbers(po_list)
+        reply_text = _build_disambiguation_prompt(po_numbers)
+        intent_data = {
+            "intent": "UNCLEAR",
+            "po_num": po_id,
+            "vendor_name": body.supplier_name or "",
+            "reason": "",
+            "escalate": False,
+            "conversation_complete": False,
+            "extracted_eta": "",
+            "shortage_note": "",
+            "ai_paused": False,
+            "vendor_initiated": False,
+            "linked_pos": [],
+            "confidence_score": 0.95
+        }
+        intent = "UNCLEAR"
+        derived = derive_fields_from_intent(intent, "non_perishable")
+
+        await update_po_operational_fields(po_id, {
+            "communication_state": derived["communication_state"],
+            "risk_level": derived["risk_level"],
+            "last_intent": intent,
+            "reason": None,
+            "ai_paused": False
+        })
+
+        payload = {
+            "po_id":                 po_id,
+            "sender_type":           "bot",
+            "sender_label":          "Compass Bot",
+            "message_text":          reply_text,
+            "vendor_phone":          vendor_phone,
+            "supplier_name":         body.supplier_name,
+            "intent":                intent,
+            "reason":                "",
+            "escalation_required":   False,
+            "conversation_complete": False,
+            "risk_level":            derived["risk_level"],
+            "priority":              derived["priority"],
+            "sla_due_at":            derived["sla_due_at"],
+            "case_type":             derived["case_type"],
+            "communication_state":   derived["communication_state"],
+            "extracted_eta":         None,
+            "shortage_note":         None,
+            "ai_paused":             False,
+            "vendor_initiated":      intent_data.get("vendor_initiated", False),
+            "confidence_score":      intent_data.get("confidence_score", 0.0),
+            "linked_pos":            []
+        }
+
+        print(f"🧭 [AGENT] Multi-PO disambiguation enforced for PO {po_id}")
+        print(f"📤 [AGENT] Sending disambiguation reply to Node Backend: {BACKEND_URL}/api/chat-message")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.post(f"{BACKEND_URL}/api/chat-message", json=payload)
+                print(f"🏁 [AGENT] Backend POST Status: {resp.status_code}")
+                logger.info("Backend POST (disambiguation) → %s %s", resp.status_code, resp.text[:120])
+            except Exception as exc:
+                print(f"❌ [AGENT] Backend POST failed: {exc}")
+                logger.error("Backend POST failed: %s", exc)
+        return
 
     # 3. Call OpenAI agent
     # We use vendor_code as the session_id to unify memory across all POs of this vendor
