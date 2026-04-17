@@ -100,15 +100,21 @@ const INTENT_TO_CATEGORY = {
 // Helper to convert DD-MM-YYYY to YYYY-MM-DD for Postgres
 function formatDateForPostgres(dateStr) {
   if (!dateStr) return null;
+  // If it's already a Date object (happens with pg driver for date/timestamp columns)
+  if (dateStr instanceof Date) {
+    return dateStr.toISOString().split('T')[0];
+  }
   // If it's already ISO format (contains T or starts with YYYY-MM-DD)
-  if (dateStr.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+  if (typeof dateStr === 'string' && (dateStr.includes('T') || /^\d{4}-\d{2}-\d{2}/.test(dateStr))) {
     return dateStr;
   }
   // Try parsing DD-MM-YYYY
-  const parts = dateStr.split('-');
-  if (parts.length === 3 && parts[2].length === 4) {
-    // DD-MM-YYYY -> YYYY-MM-DD
-    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  if (typeof dateStr === 'string') {
+    const parts = dateStr.split('-');
+    if (parts.length === 3 && parts[2].length === 4) {
+      // DD-MM-YYYY -> YYYY-MM-DD
+      return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
   }
   return dateStr;
 }
@@ -433,13 +439,16 @@ app.post('/api/chat-message', async (req, res) => {
           ai_summary:     escalationRecord.ai_summary,
           created_at:     escalationRecord.escalation_created_at
         });
-      }
 
-      // update thread_state to escalated for the BOUND PO
-      await supabase
-        .from('selected_open_po_line_items')
-        .update({ thread_state: 'escalated', communication_state: 'exception_detected' })
-        .eq('po_num', escalationPoId);
+        // ONLY update thread_state to escalated if row creation succeeded
+        console.log(`🚨 [ESCALATION] Updating PO table state to escalated for ${escalationPoId}`);
+        await supabase
+          .from('selected_open_po_line_items')
+          .update({ thread_state: 'escalated', communication_state: 'exception_detected' })
+          .eq('po_num', escalationPoId);
+      } else {
+        console.error(`❌ [ESCALATION] Failed to create escalation record for PO ${escalationPoId}. PO table NOT updated.`);
+      }
     }
 
     // Forward vendor messages to Python orchestration backend

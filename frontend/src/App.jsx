@@ -29,7 +29,7 @@ function App() {
     ? poList.filter(p => p.supplier_name === activePo.supplier_name)
     : [];
   const unifiedVendorMessages = allPos
-    .flatMap(po => messages[po.po_id] || [])
+    .flatMap(po => (messages[po.po_id] || []).filter(msg => msg.sender_type !== 'system'))
     .reduce((acc, msg) => {
       const fallbackKey = `${msg.po_id || ''}|${msg.sender_type || ''}|${msg.message_text || ''}|${msg.sent_at || ''}`;
       const dedupeKey = msg.id || fallbackKey;

@@ -5,14 +5,18 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
     switch (status) {
       case 'Confirmed': return 'bg-green-100 text-green-700 border-green-200';
       case 'Awaiting Reply': return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-      case 'Exception': return 'bg-red-100 text-red-700 border-red-200';
+      case 'Exception': return 'bg-red-100 text-red-700 border-red-200 uppercase font-black';
+      case 'Handoff': return 'bg-indigo-100 text-indigo-700 border-indigo-200 font-bold';
       default: return 'bg-slate-100 text-slate-700 border-slate-200';
     }
   };
 
-  // const getStatusText = (po) => {
-  //   return po.status === 'pending' ? 'Awaiting Reply' : po.status;
-  // };
+  const getStatusText = (po) => {
+    if (po.thread_state === 'escalated') return 'Exception';
+    if (po.thread_state === 'human_controlled') return 'Handoff';
+    if (po.communication_state === 'supplier_confirmed') return 'Confirmed';
+    return 'Awaiting Reply';
+  };
 
   // Group all POs by vendor name — one entry per vendor
   const vendorGroups = poList.reduce((acc, po) => {
@@ -27,18 +31,20 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
   // For each vendor group, pick the most recent message across all their POs
   const vendorList = Object.entries(vendorGroups).map(([vendorName, pos]) => {
     // Find latest message across all POs for this vendor
-    const allMessages = pos.flatMap(po => messages[po.po_id] || []);
+    const allMessages = pos.flatMap(po => (messages[po.po_id] || []).filter(msg => msg.sender_type !== 'system'));
     const lastMsg = allMessages.sort(
       (a, b) => new Date(b.sent_at) - new Date(a.sent_at)
     )[0];
 
-    // // Pick most severe status across all POs
-    // const statuses = pos.map(po => getStatusText(po));
-    // const status = statuses.includes('Exception')
-    //   ? 'Exception'
-    //   : statuses.includes('Awaiting Reply')
-    //   ? 'Awaiting Reply'
-    //   : statuses[0];
+    // Pick most severe status across all POs
+    const statuses = pos.map(po => getStatusText(po));
+    const status = statuses.includes('Exception')
+      ? 'Exception'
+      : statuses.includes('Handoff')
+      ? 'Handoff'
+      : statuses.includes('Confirmed')
+      ? 'Confirmed'
+      : 'Awaiting Reply';
 
     // Check if any of this vendor's POs is active
     const isActive = pos.some(po => po.po_id === activePoId);
