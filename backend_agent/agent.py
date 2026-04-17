@@ -311,6 +311,23 @@ async def call_agent(
     return ai_output
 
 
+async def add_to_history(session_id: str, role: str, content: str) -> None:
+    """Manualy update the session memory without calling the AI."""
+    async with _memory_lock:
+        history = _memory.get(session_id, [])
+        history.append({"role": role, "content": content})
+        _memory[session_id] = history[-SESSION_MEMORY_WINDOW:]
+
+
+async def add_multiple_to_history(session_id: str, messages: List[Dict[str, str]]) -> None:
+    """Atomically append multiple messages to the session history."""
+    async with _memory_lock:
+        history = _memory.get(session_id, [])
+        for m in messages:
+            history.append(m)
+        _memory[session_id] = history[-SESSION_MEMORY_WINDOW:]
+
+
 SUMMARY_SYSTEM_PROMPT = (
     "You are a procurement operations assistant for Compass Group. "
     "Analyze this WhatsApp conversation between Compass and a supplier for a Purchase Order. "
@@ -481,9 +498,11 @@ async def generate_proactive_message(po_id: str, changes: List[str]) -> str:
 def parse_intent_json(ai_output: str) -> dict:
     """
     Extract the INTENT_JSON block from the AI reply.
-    Returns a dict of parsed fields, or empty dict if not found.
+    Handles nested objects by finding the last closing brace.
     """
-    match = re.search(r'INTENT_JSON:\s*(\{.*?\})', ai_output, re.DOTALL)
+    # Use greedy match (.* instead of .*?) to find the LAST closing brace
+    # This handles nested structures like "po_binding": { ... }
+    match = re.search(r'INTENT_JSON:\s*(\{.*\})', ai_output, re.DOTALL)
     if not match:
         logger.warning("INTENT_JSON not found in AI output.")
         return {}

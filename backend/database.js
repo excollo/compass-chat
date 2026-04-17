@@ -35,7 +35,8 @@ const initDatabase = async () => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS chat_history (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        po_num TEXT NOT NULL,
+        po_num TEXT,
+        vendor_code TEXT,
         sender_type TEXT NOT NULL,
         message_text TEXT NOT NULL,
         direction TEXT,
@@ -43,7 +44,8 @@ const initDatabase = async () => {
         escalation_required BOOLEAN DEFAULT FALSE,
         vendor_phone TEXT,
         linked_pos JSONB,
-        reason TEXT
+        reason TEXT,
+        sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -68,6 +70,19 @@ const initDatabase = async () => {
     await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS vendor_initiated BOOLEAN DEFAULT FALSE`);
     await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS reminder_count INTEGER DEFAULT 0`);
     await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS linked_pos JSONB`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`);
+
+    // ── Vendor Threading & PO Binding Migration ──────────────────────────────
+    // Add vendor_code as the primary thread identifier
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS vendor_code TEXT`);
+    
+    // Make po_num nullable so vendor-level (pre-disambiguation) messages can be saved without a PO
+    await client.query(`ALTER TABLE chat_history ALTER COLUMN po_num DROP NOT NULL`).catch(() => {});
+    
+    // Add PO binding fields
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS bound_po_num TEXT`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS po_binding_source VARCHAR(20) DEFAULT 'unresolved'`);
+    await client.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS po_binding_confidence NUMERIC(3,2) DEFAULT 0.00`);
     
     console.log('✅ Database initialized correctly.');
     client.release();
@@ -77,21 +92,27 @@ const initDatabase = async () => {
 };
 
 // Messaging: Save Message
+// po_num is now NULLABLE — null means the message belongs to a vendor thread
+// but no specific PO has been confirmed yet (multi-PO disambiguation pending).
+// Use vendor_code as the durable thread key; po_num fills in after AI confirms it.
 const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extra = {}) => {
   const direction = sender_type === 'vendor' ? 'inbound' : 'outbound';
-  console.log(`📝 [DB] Saving message to chat_history...`);
+  console.log(`📝 [DB] Saving message | po_num=${po_num || 'NULL'} | vendor_code=${(extra || {}).vendor_code || '-'} | sender=${sender_type}`);
   
   const columns = [
-    'po_num', 'sender_type', 'message_text', 'direction', 'vendor_phone', 'intent', 
+    'po_num', 'vendor_code', 'sender_type', 'message_text', 'direction', 'vendor_phone', 'intent', 
     'reason', 'escalation_required', 'communication_state', 'risk_level', 'confidence_score', 
     'extracted_eta', 'shortage_note', 'case_type', 'priority', 'assigned_spoc', 
     'sla_due_at', 'sla_breached', 'human_takeover_at', 'takeover_by', 'ai_paused', 
-    'vendor_initiated', 'reminder_count', 'linked_pos'
+    'vendor_initiated', 'reminder_count', 'linked_pos',
+    // PO binding fields
+    'bound_po_num', 'po_binding_source', 'po_binding_confidence'
   ];
 
   const extraData = extra || {};
   const values = [
-    po_num, 
+    po_num || null,          // nullable — null until confirmed
+    extraData.vendor_code || null,
     sender_type, 
     message_text, 
     direction, 
@@ -114,7 +135,11 @@ const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extr
     extraData.ai_paused || false,
     extraData.vendor_initiated || false,
     extraData.reminder_count || 0,
-    extraData.linked_pos ? JSON.stringify(extraData.linked_pos) : null
+    extraData.linked_pos ? JSON.stringify(extraData.linked_pos) : null,
+    // PO binding
+    extraData.bound_po_num || null,
+    extraData.po_binding_source || 'unresolved',
+    extraData.po_binding_confidence != null ? extraData.po_binding_confidence : 0.00
   ];
 
   const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
@@ -133,59 +158,59 @@ const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extr
 
 // Messaging: Get Chat History (Consolidated by Vendor)
 const getChatHistory = async (po_num) => {
-  // 1) Prefer vendor phone from chat_history for this PO
+  // 1) First try to resolve vendor_code and phone for this PO
+  let vendor_code = null;
   let vendor_phone = null;
-  const phoneFromHistoryQuery = `
-    SELECT vendor_phone
-    FROM chat_history
+
+  const poInfoQuery = `
+    SELECT vendor_code, vendor_phone
+    FROM selected_open_po_line_items
     WHERE po_num = $1
-      AND vendor_phone IS NOT NULL
-      AND vendor_phone <> ''
-    ORDER BY sent_at DESC
     LIMIT 1
   `;
-  const phoneFromHistory = await pool.query(phoneFromHistoryQuery, [po_num]);
-  if (phoneFromHistory.rows.length > 0) {
-    vendor_phone = phoneFromHistory.rows[0].vendor_phone;
+  const poInfo = await pool.query(poInfoQuery, [po_num]);
+  if (poInfo.rows.length > 0) {
+    vendor_code = poInfo.rows[0].vendor_code;
+    vendor_phone = poInfo.rows[0].vendor_phone;
   }
 
-  // 2) If no phone found in chat history, derive it from live PO table
-  if (!vendor_phone) {
-    const phoneFromPoTableQuery = `
-      SELECT vendor_phone
-      FROM selected_open_po_line_items
+  // 2) Fallback to chat history to find phone/code if PO table lookup failed (e.g. for closed POs)
+  if (!vendor_code || !vendor_phone) {
+    const historyInfoQuery = `
+      SELECT vendor_code, vendor_phone
+      FROM chat_history
       WHERE po_num = $1
-        AND vendor_phone IS NOT NULL
-        AND vendor_phone <> ''
+      ORDER BY sent_at DESC
       LIMIT 1
     `;
-    const phoneFromPoTable = await pool.query(phoneFromPoTableQuery, [po_num]);
-    if (phoneFromPoTable.rows.length > 0) {
-      vendor_phone = phoneFromPoTable.rows[0].vendor_phone;
+    const historyInfo = await pool.query(historyInfoQuery, [po_num]);
+    if (historyInfo.rows.length > 0) {
+      if (!vendor_code) vendor_code = historyInfo.rows[0].vendor_code;
+      if (!vendor_phone) vendor_phone = historyInfo.rows[0].vendor_phone;
     }
   }
 
-  if (!vendor_phone) {
-    // Final fallback: PO-specific history only
-    const fallbackQuery = `SELECT * FROM chat_history WHERE po_num = $1 ORDER BY sent_at ASC`;
-    const { rows } = await pool.query(fallbackQuery, [po_num]);
-    return rows.map(r => ({ ...r, po_id: r.po_num }));
-  }
-
-  // 3) Return unified history for this vendor with phone-normalized match
+  // 3) Unified query: filter by vendor_code (primary) OR vendor_phone (fallback)
+  // This ensures that messages saved with po_num=NULL still appear in the vendor thread.
   const query = `
     SELECT *
     FROM chat_history
     WHERE
-      vendor_phone = $1
-      OR regexp_replace(COALESCE(vendor_phone, ''), '\\D', '', 'g') =
-         regexp_replace(COALESCE($1, ''), '\\D', '', 'g')
+      (vendor_code IS NOT NULL AND vendor_code = $1::TEXT)
+      OR (
+        vendor_phone IS NOT NULL AND $2::TEXT IS NOT NULL
+        AND regexp_replace(vendor_phone, '\\D', '', 'g') = regexp_replace($2::TEXT, '\\D', '', 'g')
+      )
+      OR po_num = $3::TEXT
     ORDER BY sent_at ASC
   `;
-  const { rows } = await pool.query(query, [vendor_phone]);
+  const { rows } = await pool.query(query, [vendor_code, vendor_phone, po_num]);
+  
   return rows.map(r => ({
     ...r,
-    po_id: r.po_num // Keep the mapping for frontend compatibility
+    // Use the requested po_num as the fallback po_id so these messages 
+    // show up in the current thread in the UI even if they aren't bound yet.
+    po_id: r.po_num || r.bound_po_num || po_num 
   }));
 };
 
@@ -273,6 +298,54 @@ const updateThreadState = async (po_num, state, metadata = {}) => {
   return rows[0];
 };
 
+// PO Binding: update binding fields on an existing message row
+const updateMessagePoBinding = async (message_id, bound_po_num, po_binding_confidence, po_binding_source) => {
+  const query = `
+    UPDATE chat_history
+    SET po_num = $1,
+        bound_po_num = $1,
+        po_binding_confidence = $2,
+        po_binding_source = $3
+    WHERE id = $4
+    RETURNING id, po_num, bound_po_num, po_binding_source, po_binding_confidence;
+  `;
+  const { rows } = await pool.query(query, [bound_po_num, po_binding_confidence, po_binding_source, message_id]);
+  console.log(`🔗 [DB] PO binding updated for message ${message_id} → ${bound_po_num} (${po_binding_source})`);
+  return rows[0];
+};
+
+// PO Binding: fetch all open POs for a vendor phone (for binding logic in server)
+const getOpenPOsForVendor = async (vendor_phone) => {
+  if (!vendor_phone) return [];
+  const query = `
+    SELECT DISTINCT po_num, vendor_name, vendor_code, delivery_date, status, thread_state
+    FROM selected_open_po_line_items
+    WHERE (
+      vendor_phone IS NOT NULL
+      AND regexp_replace(vendor_phone, '\\D', '', 'g') = regexp_replace($1, '\\D', '', 'g')
+    )
+    AND (status IS NULL OR LOWER(status) NOT IN ('closed', 'delivered', 'completed'))
+    ORDER BY delivery_date ASC;
+  `;
+  const { rows } = await pool.query(query, [vendor_phone]);
+  return rows;
+};
+
+// Vendor: get vendor_code for a phone number (used to key the chat thread)
+const getVendorCodeForPhone = async (vendor_phone) => {
+  if (!vendor_phone) return null;
+  const query = `
+    SELECT DISTINCT vendor_code
+    FROM selected_open_po_line_items
+    WHERE vendor_phone IS NOT NULL
+      AND regexp_replace(vendor_phone, '\\D', '', 'g') = regexp_replace($1, '\\D', '', 'g')
+      AND vendor_code IS NOT NULL
+    LIMIT 1;
+  `;
+  const { rows } = await pool.query(query, [vendor_phone]);
+  return rows[0]?.vendor_code || null;
+};
+
 module.exports = {
   saveMessage,
   getChatHistory,
@@ -280,5 +353,8 @@ module.exports = {
   getPurchaseOrders,
   updateThreadState,
   initDatabase,
+  updateMessagePoBinding,
+  getOpenPOsForVendor,
+  getVendorCodeForPhone,
   pool
 };

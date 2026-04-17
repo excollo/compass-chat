@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { saveMessage, getChatHistory, deleteChatHistory, getPurchaseOrders, updateThreadState, initDatabase } = require('./database');
+const { saveMessage, getChatHistory, deleteChatHistory, getPurchaseOrders, updateThreadState, initDatabase, updateMessagePoBinding, getOpenPOsForVendor, getVendorCodeForPhone } = require('./database');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
@@ -248,6 +248,15 @@ app.delete('/api/chat-history', async (req, res) => {
     
     // Broadcast clear event so UI components can reset instantly
     broadcast({ event: 'clear_chat', po_id });
+
+    // Also clear Python agent's in-memory session (resolved PO tracking + message history)
+    const PYTHON_URL = (process.env.PYTHON_BACKEND_URL || 'http://localhost:8000').trim();
+    try {
+      await axios.post(`${PYTHON_URL}/webhook/clear-session`, { session_id: po_id });
+      console.log(`🧠 [BACKEND] Python session cleared for PO: ${po_id}`);
+    } catch (pyErr) {
+      console.warn(`⚠️ [BACKEND] Python session clear failed (non-fatal): ${pyErr.message}`);
+    }
     
     res.json({ success: true, message: 'Conversation memory cleared' });
   } catch (error) {
@@ -263,10 +272,59 @@ app.post('/api/chat-message', async (req, res) => {
       intent, reason, escalation_required, admin_message, conversation_complete,
       communication_state, risk_level, priority, sla_due_at, case_type,
       extracted_eta, shortage_note, ai_paused, vendor_initiated,
-      confidence_score, linked_pos
+      confidence_score, linked_pos,
+      // PO binding (sent by Python agent on bot replies)
+      bound_po_num, po_binding_source, po_binding_confidence
     } = req.body;
     
     console.log(`📩 [BACKEND] Message received from ${sender_type} for PO: ${po_id}`);
+
+    // ── PO Binding: resolve binding for INBOUND vendor messages ───────────────
+    let resolvedBoundPoNum = bound_po_num || null;
+    let resolvedBindingSource = po_binding_source || 'unresolved';
+    let resolvedBindingConfidence = po_binding_confidence != null ? po_binding_confidence : 0.00;
+    // Vendor-code for this vendor (the durable thread key, vendor_code over phone)
+    let vendorCode = req.body.vendor_code || null;
+
+    if (sender_type === 'vendor' && vendor_phone) {
+      try {
+        const openPos = await getOpenPOsForVendor(vendor_phone);
+        // Always resolve vendor_code from DB for inbound messages
+        if (!vendorCode && openPos.length > 0) {
+          vendorCode = openPos[0].vendor_code || null;
+        }
+        if (!vendorCode) {
+          vendorCode = await getVendorCodeForPhone(vendor_phone);
+        }
+
+        if (openPos.length === 1) {
+          // Only one open PO → bind automatically
+          resolvedBoundPoNum = openPos[0].po_num;
+          resolvedBindingSource = 'inferred';
+          resolvedBindingConfidence = 0.95;
+          console.log(`🔗 [BINDING] Single PO vendor → auto-bound to ${resolvedBoundPoNum} | vendor_code=${vendorCode}`);
+        } else if (openPos.length > 1) {
+          // Multiple open POs → unresolved until AI clarifies
+          // IMPORTANT: do NOT assign resolvedBoundPoNum — leave null
+          resolvedBoundPoNum = null;
+          resolvedBindingSource = 'unresolved';
+          resolvedBindingConfidence = 0.00;
+          console.log(`⚠️ [BINDING] Multi-PO vendor (${openPos.length} POs) → binding unresolved | vendor_code=${vendorCode}`);
+        }
+      } catch (bindErr) {
+        console.error('⚠️ [BINDING] PO lookup failed:', bindErr.message);
+      }
+    } else if (sender_type === 'bot') {
+      // Bot replies carry vendor_code from Python agent
+      if (!vendorCode) vendorCode = await getVendorCodeForPhone(vendor_phone).catch(() => null);
+      // Bot binding source: use what Python sent; upgrade if we have a bound_po but no source
+      if (!resolvedBindingSource || resolvedBindingSource === 'unresolved') {
+        if (resolvedBoundPoNum) {
+          resolvedBindingSource = 'inferred';
+          resolvedBindingConfidence = 0.90;
+        }
+      }
+    }
 
     // Evaluate escalation FIRST so we can flag the message properly in the DB
     const EXCEPTION_INTENTS = new Set(['PARTIAL', 'DELAYED', 'REJECTED', 'PRICE_DISPUTE', 'PRICE_UPDATE', 'PAYMENT_ISSUE', 'QUALITY_ISSUE', 'PO_CANCELLATION']);
@@ -280,18 +338,41 @@ app.post('/api/chat-message', async (req, res) => {
       (isConvComplete && sender_type === 'bot' && safeIntent && EXCEPTION_INTENTS.has(safeIntent))
     );
 
-    // Prepare extra data for DB save (ensuring fallback escalation triggers UI banner)
-    const finalEscalationFlag = shouldEscalate;
+    // ── GUARD: Never create a case when PO binding is unresolved ────────────
+    // Escalation requires a confirmed bound_po_num; otherwise the case would target the wrong PO.
+    const bindingConfirmed = resolvedBindingSource !== 'unresolved' && !!resolvedBoundPoNum;
+    const canEscalate = shouldEscalate && bindingConfirmed;
+    if (shouldEscalate && !bindingConfirmed) {
+      console.warn(`⛔ [ESCALATION] Blocked — PO binding unresolved for message on PO: ${po_id}. Case NOT created.`);
+    }
+
+    const finalEscalationFlag = canEscalate;
 
 
     const extraData = {
       intent, reason, escalation_required: finalEscalationFlag, communication_state, risk_level, 
       priority, sla_due_at, case_type, extracted_eta, shortage_note,
-      ai_paused, vendor_initiated, confidence_score, linked_pos
+      ai_paused, vendor_initiated, confidence_score, linked_pos,
+      // PO binding
+      bound_po_num: resolvedBoundPoNum,
+      po_binding_source: resolvedBindingSource,
+      po_binding_confidence: resolvedBindingConfidence,
+      // Vendor scope
+      vendor_code: vendorCode
     };
 
-    // Save to PostgreSQL (chat_history table)
-    const saved = await saveMessage(po_id, sender_type, message_text, vendor_phone, extraData);
+    // ── Save to PostgreSQL ───────────────────────────────────────────────
+    // For vendor messages with unresolved multi-PO binding:
+    //   po_num = NULL (not a specific PO yet)
+    //   vendor_code = the vendor-level thread key
+    // For confirmed bindings and bot messages:
+    //   po_num = the confirmed PO number
+    const savePONum = (sender_type === 'vendor' && resolvedBindingSource === 'unresolved')
+      ? null
+      : (resolvedBoundPoNum || po_id || null);
+
+    const saved = await saveMessage(savePONum, sender_type, message_text, vendor_phone, extraData);
+    console.log(`💾 [DB] Saved | id=${saved.id} | po_num=${savePONum || 'NULL'} | vendor_code=${vendorCode || '-'} | source=${resolvedBindingSource}`);
     
     // Identify all sibling POs for this vendor to ensure real-time sync across all views
     let siblingPoIds = [po_id];
@@ -321,12 +402,14 @@ app.post('/api/chat-message', async (req, res) => {
       });
     });
 
-    // If bot flagged escalation (or fallback activated above) — create record in Supabase escalations table
-    if (shouldEscalate) {
-      console.log(`🚨 [ESCALATION] Triggered for PO ${po_id} — intent: ${intent} | explicit: ${escalation_required} | conv_complete: ${conversation_complete}`);
+    // If bot flagged escalation AND binding is confirmed — create record in Supabase escalations table
+    if (canEscalate) {
+      // Use the authoritatively bound PO number, not the original po_id
+      const escalationPoId = resolvedBoundPoNum || po_id;
+      console.log(`🚨 [ESCALATION] Triggered for bound PO ${escalationPoId} (original: ${po_id}) — intent: ${intent} | binding: ${resolvedBindingSource}`);
       
       const escalationRecord = await createEscalationInSupabase({
-        po_id,
+        po_id: escalationPoId,
         vendor_phone,
         supplier_name,
         intent,
@@ -341,7 +424,7 @@ app.post('/api/chat-message', async (req, res) => {
         broadcast({
           event: 'new_escalation',
           escalation_id:  escalationRecord.id,
-          po_num:         po_id,
+          po_num:         escalationPoId,
           vendor_name:    escalationRecord.vendor_name,
           reason:         escalationRecord.escalation_reason,
           reason_detail:  escalationRecord.reason_detail,
@@ -352,16 +435,14 @@ app.post('/api/chat-message', async (req, res) => {
         });
       }
 
-      // also update thread_state to escalated
+      // update thread_state to escalated for the BOUND PO
       await supabase
         .from('selected_open_po_line_items')
         .update({ thread_state: 'escalated', communication_state: 'exception_detected' })
-        .eq('po_num', po_id);
+        .eq('po_num', escalationPoId);
     }
 
     // Forward vendor messages to Python orchestration backend
-    // Python will check thread_state and decide whether bot should respond
-    // Operator messages are NOT forwarded — they are human-to-vendor directly
     if (sender_type === 'vendor') {
       const PYTHON_BACKEND_URL = (process.env.PYTHON_BACKEND_URL || 'http://localhost:8000').trim();
       console.log(`🚀 [BACKEND] Forwarding vendor message to Python: ${PYTHON_BACKEND_URL}/webhook/chat`);
@@ -371,8 +452,10 @@ app.post('/api/chat-message', async (req, res) => {
           po_id,
           supplier_name: supplier_name || "",
           vendor_phone: vendor_phone || "",
+          vendor_code: vendorCode || "",   // ← now passed so Python uses it as session key
           message_text: message_text || "",
-          timestamp: saved.sent_at
+          timestamp: saved.sent_at,
+          inbound_message_id: saved.id || ""  // for binding back-update
         });
         console.log(`✅ [BACKEND] Python Response: ${resp.status}`);
       } catch (err) {
@@ -431,6 +514,28 @@ app.post('/api/handback', async (req, res) => {
     broadcast({ event: 'thread_state_change', po_id: po_num, thread_state: 'bot_active' });
     res.json({ success: true, thread_state: 'bot_active' });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Update PO binding on an existing message (called by Python agent after clarification)
+app.patch('/api/message/:id/po-binding', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bound_po_num, po_binding_confidence, po_binding_source } = req.body;
+    if (!id) return res.status(400).json({ error: 'message id is required' });
+    if (!bound_po_num) return res.status(400).json({ error: 'bound_po_num is required' });
+
+    const updated = await updateMessagePoBinding(
+      id,
+      bound_po_num,
+      po_binding_confidence != null ? po_binding_confidence : 0.90,
+      po_binding_source || 'inferred'
+    );
+    console.log(`🔗 [BACKEND] PO binding updated for message ${id} → ${bound_po_num}`);
+    res.json({ success: true, updated });
+  } catch (error) {
+    console.error('❌ [BACKEND] PO Binding Update Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
