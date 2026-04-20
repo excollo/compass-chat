@@ -23,24 +23,11 @@ function App() {
     threadStatesRef.current = threadStates;
   }, [threadStates]);
 
-  // Derive activePo and allPos reactively — no extra state needed
+  // Derive active PO reactively — no extra state needed
   const activePo = poList.find(p => p.po_id === activePoId) || poList[0];
-  const allPos = activePo
-    ? poList.filter(p => p.supplier_name === activePo.supplier_name)
+  const activePoMessages = activePoId
+    ? (messages[activePoId] || []).filter(msg => msg.sender_type !== 'system')
     : [];
-  const unifiedVendorMessages = allPos
-    .flatMap(po => (messages[po.po_id] || []).filter(msg => msg.sender_type !== 'system'))
-    .reduce((acc, msg) => {
-      const fallbackKey = `${msg.po_id || ''}|${msg.sender_type || ''}|${msg.message_text || ''}|${msg.sent_at || ''}`;
-      const dedupeKey = msg.id || fallbackKey;
-      if (!acc.map.has(dedupeKey)) {
-        acc.map.set(dedupeKey, true);
-        acc.list.push(msg);
-      }
-      return acc;
-    }, { map: new Map(), list: [] })
-    .list
-    .sort((a, b) => new Date(a.sent_at || 0) - new Date(b.sent_at || 0));
 
   // Persist activePoId to localStorage whenever it changes
   useEffect(() => {
@@ -194,7 +181,12 @@ function App() {
         sender_type: 'vendor',
         message_text: text,
         vendor_phone: activePo.vendor_phone,
-        supplier_name: activePo.supplier_name
+        supplier_name: activePo.supplier_name,
+        // Message sent from an already selected PO thread in UI.
+        // Force explicit binding so it is persisted under this PO.
+        bound_po_num: activePoId,
+        po_binding_source: 'explicit',
+        po_binding_confidence: 1.0
       });
 
     } catch (err) {
@@ -222,14 +214,13 @@ function App() {
         messages={messages}
         poList={poList}
       />
-      {/* Pass a UNIFIED message history for the current vendor (combines messages from all their POs) */}
       <ChatPanel
         activePo={activePo}
-        allPos={allPos}
-        messages={unifiedVendorMessages}
+        allPos={activePo ? [activePo] : []}
+        messages={activePoMessages}
         onSendMessage={handleSendMessage}
         isTyping={isTyping[activePoId]}
-        isVendorMultiple={allPos.length > 1}
+        isVendorMultiple={false}
       />
     </div>
   );
