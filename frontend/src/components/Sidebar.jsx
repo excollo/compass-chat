@@ -1,23 +1,6 @@
 import React from 'react';
 
 const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'Confirmed': return 'bg-green-100 text-green-700 border-green-200';
-      case 'Awaiting Reply': return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-      case 'Exception': return 'bg-red-100 text-red-700 border-red-200 uppercase font-black';
-      case 'Handoff': return 'bg-indigo-100 text-indigo-700 border-indigo-200 font-bold';
-      default: return 'bg-slate-100 text-slate-700 border-slate-200';
-    }
-  };
-
-  const getStatusText = (po) => {
-    if (po.thread_state === 'escalated') return 'Exception';
-    if (po.thread_state === 'human_controlled') return 'Handoff';
-    if (po.communication_state === 'supplier_confirmed') return 'Confirmed';
-    return 'Awaiting Reply';
-  };
-
   // Group all POs by vendor name — one entry per vendor
   const vendorGroups = poList.reduce((acc, po) => {
     const name = po.supplier_name || 'Unknown Vendor';
@@ -35,16 +18,7 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
     const lastMsg = allMessages.sort(
       (a, b) => new Date(b.sent_at) - new Date(a.sent_at)
     )[0];
-
-    // Pick most severe status across all POs
-    const statuses = pos.map(po => getStatusText(po));
-    const status = statuses.includes('Exception')
-      ? 'Exception'
-      : statuses.includes('Handoff')
-      ? 'Handoff'
-      : statuses.includes('Confirmed')
-      ? 'Confirmed'
-      : 'Awaiting Reply';
+    const selectedPo = pos.find(po => po.po_id === lastMsg?.po_id) || pos[0];
 
     // Check if any of this vendor's POs is active
     const isActive = pos.some(po => po.po_id === activePoId);
@@ -52,7 +26,7 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
     // PO count badge
     const poCount = pos.length;
 
-    return { vendorName, pos, lastMsg, status, isActive, poCount };
+    return { vendorName, selectedPo, lastMsg, isActive, poCount };
   });
 
   return (
@@ -63,11 +37,10 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {vendorList.map(({ vendorName, pos, lastMsg, status, isActive, poCount }) => (
+        {vendorList.map(({ vendorName, selectedPo, lastMsg, isActive, poCount }) => (
           <button
             key={vendorName}
-            onClick={() => onSelect(pos[0], pos)}
-            // ↑ pass first PO as default + all POs for this vendor
+            onClick={() => onSelect(selectedPo)}
             className={`w-full text-left p-4 transition-all border-l-4 ${
               isActive
                 ? 'bg-slate-800 border-accent-green'
@@ -95,15 +68,8 @@ const Sidebar = ({ activePoId, onSelect, messages, poList }) => {
               </div>
             )}
 
-            <div className="flex justify-between items-center">
-              <span
-                className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 ${getStatusColor(status)}`}
-              >
-                {status}
-              </span>
-              <div className="text-[11px] text-slate-400 italic flex-1 ml-3 truncate">
-                {lastMsg ? lastMsg.message_text : 'No history'}
-              </div>
+            <div className="text-[11px] text-slate-400 italic truncate">
+              {lastMsg ? lastMsg.message_text : 'No history'}
             </div>
           </button>
         ))}
