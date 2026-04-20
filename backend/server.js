@@ -303,19 +303,24 @@ app.post('/api/chat-message', async (req, res) => {
           vendorCode = await getVendorCodeForPhone(vendor_phone);
         }
 
-        if (openPos.length === 1) {
-          // Only one open PO → bind automatically
-          resolvedBoundPoNum = openPos[0].po_num;
-          resolvedBindingSource = 'inferred';
-          resolvedBindingConfidence = 0.95;
-          console.log(`🔗 [BINDING] Single PO vendor → auto-bound to ${resolvedBoundPoNum} | vendor_code=${vendorCode}`);
-        } else if (openPos.length > 1) {
-          // Multiple open POs → unresolved until AI clarifies
-          // IMPORTANT: do NOT assign resolvedBoundPoNum — leave null
-          resolvedBoundPoNum = null;
-          resolvedBindingSource = 'unresolved';
-          resolvedBindingConfidence = 0.00;
-          console.log(`⚠️ [BINDING] Multi-PO vendor (${openPos.length} POs) → binding unresolved | vendor_code=${vendorCode}`);
+        // Respect explicit PO binding provided by the caller (UI-selected PO thread).
+        if (!resolvedBoundPoNum) {
+          if (openPos.length === 1) {
+            // Only one open PO → bind automatically
+            resolvedBoundPoNum = openPos[0].po_num;
+            resolvedBindingSource = 'inferred';
+            resolvedBindingConfidence = 0.95;
+            console.log(`🔗 [BINDING] Single PO vendor → auto-bound to ${resolvedBoundPoNum} | vendor_code=${vendorCode}`);
+          } else if (openPos.length > 1) {
+            // Multiple open POs → unresolved until AI clarifies
+            // IMPORTANT: do NOT assign resolvedBoundPoNum — leave null
+            resolvedBoundPoNum = null;
+            resolvedBindingSource = 'unresolved';
+            resolvedBindingConfidence = 0.00;
+            console.log(`⚠️ [BINDING] Multi-PO vendor (${openPos.length} POs) → binding unresolved | vendor_code=${vendorCode}`);
+          }
+        } else {
+          console.log(`🔗 [BINDING] Using explicit bound PO ${resolvedBoundPoNum} | source=${resolvedBindingSource}`);
         }
       } catch (bindErr) {
         console.error('⚠️ [BINDING] PO lookup failed:', bindErr.message);
@@ -380,32 +385,16 @@ app.post('/api/chat-message', async (req, res) => {
     const saved = await saveMessage(savePONum, sender_type, message_text, vendor_phone, extraData);
     console.log(`💾 [DB] Saved | id=${saved.id} | po_num=${savePONum || 'NULL'} | vendor_code=${vendorCode || '-'} | source=${resolvedBindingSource}`);
     
-    // Identify all sibling POs for this vendor to ensure real-time sync across all views
-    let siblingPoIds = [po_id];
-    try {
-      const { data: siblingPos } = await supabase
-        .from('selected_open_po_line_items')
-        .select('po_num')
-        .eq('vendor_phone', vendor_phone);
-      
-      if (siblingPos && siblingPos.length > 0) {
-        siblingPoIds = [...new Set(siblingPos.map(p => p.po_num))];
-      }
-    } catch (err) {
-      console.error(`⚠️ [SYNC] Failed to fetch sibling POs:`, err.message);
-    }
-
-    // Broadcast to every sibling PO ID
-    siblingPoIds.forEach(targetId => {
-      broadcast({ 
-        event: 'new_message', 
-        po_id: targetId, 
-        sender_type, 
-        message_text, 
-        ...extraData,
-        admin_message: admin_message || '',
-        sent_at: saved.sent_at 
-      });
+    // Broadcast only to the authoritative PO thread.
+    const targetPoId = savePONum || po_id;
+    broadcast({ 
+      event: 'new_message', 
+      po_id: targetPoId, 
+      sender_type, 
+      message_text, 
+      ...extraData,
+      admin_message: admin_message || '',
+      sent_at: saved.sent_at 
     });
 
     // If bot flagged escalation AND binding is confirmed — create record in Supabase escalations table
