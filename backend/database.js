@@ -156,61 +156,19 @@ const saveMessage = async (po_num, sender_type, message_text, vendor_phone, extr
 
 
 
-// Messaging: Get Chat History (Consolidated by Vendor)
+// Messaging: Get Chat History (Strictly by PO)
 const getChatHistory = async (po_num) => {
-  // 1) First try to resolve vendor_code and phone for this PO
-  let vendor_code = null;
-  let vendor_phone = null;
-
-  const poInfoQuery = `
-    SELECT vendor_code, vendor_phone
-    FROM selected_open_po_line_items
-    WHERE po_num = $1
-    LIMIT 1
-  `;
-  const poInfo = await pool.query(poInfoQuery, [po_num]);
-  if (poInfo.rows.length > 0) {
-    vendor_code = poInfo.rows[0].vendor_code;
-    vendor_phone = poInfo.rows[0].vendor_phone;
-  }
-
-  // 2) Fallback to chat history to find phone/code if PO table lookup failed (e.g. for closed POs)
-  if (!vendor_code || !vendor_phone) {
-    const historyInfoQuery = `
-      SELECT vendor_code, vendor_phone
-      FROM chat_history
-      WHERE po_num = $1
-      ORDER BY sent_at DESC
-      LIMIT 1
-    `;
-    const historyInfo = await pool.query(historyInfoQuery, [po_num]);
-    if (historyInfo.rows.length > 0) {
-      if (!vendor_code) vendor_code = historyInfo.rows[0].vendor_code;
-      if (!vendor_phone) vendor_phone = historyInfo.rows[0].vendor_phone;
-    }
-  }
-
-  // 3) Unified query: filter by vendor_code (primary) OR vendor_phone (fallback)
-  // This ensures that messages saved with po_num=NULL still appear in the vendor thread.
   const query = `
     SELECT *
     FROM chat_history
-    WHERE
-      (vendor_code IS NOT NULL AND vendor_code = $1::TEXT)
-      OR (
-        vendor_phone IS NOT NULL AND $2::TEXT IS NOT NULL
-        AND regexp_replace(vendor_phone, '\\D', '', 'g') = regexp_replace($2::TEXT, '\\D', '', 'g')
-      )
-      OR po_num = $3::TEXT
+    WHERE po_num = $1::TEXT
     ORDER BY sent_at ASC
   `;
-  const { rows } = await pool.query(query, [vendor_code, vendor_phone, po_num]);
+  const { rows } = await pool.query(query, [po_num]);
   
   return rows.map(r => ({
     ...r,
-    // Use the requested po_num as the fallback po_id so these messages 
-    // show up in the current thread in the UI even if they aren't bound yet.
-    po_id: r.po_num || r.bound_po_num || po_num 
+    po_id: r.po_num || po_num
   }));
 };
 
