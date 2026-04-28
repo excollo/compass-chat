@@ -203,8 +203,8 @@ const getPurchaseOrders = async () => {
         vendor_phone,
         status,
         thread_state
-      FROM ${tableName} 
-      LIMIT 10
+      FROM ${tableName}
+      ORDER BY delivery_date DESC
     `;
     const { rows } = await pool.query(query);
     
